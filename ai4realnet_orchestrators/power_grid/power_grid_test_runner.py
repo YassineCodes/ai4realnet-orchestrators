@@ -123,7 +123,7 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
     FRAMEWORK_PATH = FRAMEWORK_PATH
     
     # Evaluation configuration
-    ATTACKER_TYPES = ["Random", "SAC_5","SAC_10","PPO","GEPeturb","RLPerturb", "LambdaPIR"]
+    ATTACKER_TYPES = ["Random", "SAC_5","SAC_10","PPO","GEPerturb","RLPerturb", "LambdaPIR"]
     NUM_EPISODES = 50
     ENV_NAME = "l2rpn_case14_sandbox"
     
