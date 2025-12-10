@@ -21,7 +21,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Optional, Union, List, Tuple
-
+import traceback
 import grid2op
 import numpy as np
 import tensorflow as tf
@@ -189,7 +189,7 @@ class MyAgent(BaseAgent):
         Returns:
             Tuple of (selected_action, action_id) where action_id is -1 for default actions
         """
-        ##print("[DEBUG] act_with_id called. max load:", observation.rho.max())
+        
         # Handle continuing multi-step action sequences
         if self.next_actions is not None:
             try:
@@ -232,7 +232,7 @@ class MyAgent(BaseAgent):
 
         # Get model-recommended actions
         sorted_actions = self._get_model_actions(observation)[:self.max_action_sim]
-        print("[DEBUG] Sorted action indices:", sorted_actions)
+        
         # Simulate and evaluate actions
         for simulation_count, action_id in enumerate(sorted_actions):
             action_vector = self.actions[action_id, :]
@@ -244,9 +244,7 @@ class MyAgent(BaseAgent):
                 action_vect=action_vector,
                 check_overload=self.check_overload
             )
-            #print(f"[DEBUG] Action ID {action_id}, valid: {is_valid}, predicted max load: {predicted_rho}, vector: {action_vector}")
-
-
+            
             
             if not is_valid:
                 continue
@@ -288,9 +286,7 @@ class MyAgent(BaseAgent):
                 original_action=self.action_space({})
             )
             best_action_id = -1
-
-        ##### DEBUG #####
-        #print(f"[DEBUG] Action ID {action_id} predicted max load: {predicted_rho}")
+        
         return next_action, best_action_id
 
     def act(
@@ -473,9 +469,8 @@ class MyAgent(BaseAgent):
         return action_probabilities.argsort()[::-1]
 
     def _get_saved_model_actions(self, observation: grid2op.Observation.BaseObservation) -> np.ndarray:
-        """
-        Get actions from SavedModel format (legacy RLib models).
-        """
+        """Get actions from SavedModel format (legacy RLib models or SAC)."""
+        
         # Prepare input
         if isinstance(self.subset, list):
             model_input = observation.to_vect()[self.subset]
@@ -483,34 +478,58 @@ class MyAgent(BaseAgent):
             model_input = obs_to_vect(observation, False)
         else:
             model_input = observation.to_vect()
-
+        
         if self.scaler is not None:
             model_input = self.scaler.transform(model_input.reshape(1, -1)).reshape(-1)
-
-        # FIX 1: Cast to float32 to match model expectations
+        
+        # CRITICAL: Convert to float32 (models expect float32, not float64)
         model_input = model_input.astype(np.float32)
-
-        # Call SavedModel signature - ONLY pass observations
+        
+        # Call SavedModel signature
         signature_fn = self.model.signatures["serving_default"]
-        output = signature_fn(
-            observations=tf.convert_to_tensor(model_input.reshape(1, -1))
-        )
-
-        # FIX 2: Handle different output key names from different model versions
+        
+        # Detect signature and pass appropriate arguments
         try:
-            if "action_dist_inputs" in output:
-                action_probabilities = tf.nn.softmax(output["action_dist_inputs"]).numpy().reshape(-1)
-            elif "outputs" in output:
-                action_probabilities = tf.nn.softmax(output["outputs"]).numpy().reshape(-1)
+            # Try RLib-style call first (with timestep and is_training)
+            output = signature_fn(
+                observations=tf.convert_to_tensor(model_input.reshape(1, -1), dtype=tf.float32),  # ← Add dtype
+                timestep=tf.convert_to_tensor(0, dtype=tf.int64),
+                is_training=tf.convert_to_tensor(False),
+            )
+        except (TypeError, ValueError) as e:
+            if "timestep" in str(e) or "unexpected keyword argument" in str(e):
+                # SAC-style or simpler model (observations only)
+                logger.debug("Model doesn't accept timestep parameter, using simple signature")
+                output = signature_fn(
+                    observations=tf.convert_to_tensor(model_input.reshape(1, -1), dtype=tf.float32)  # ← Add dtype
+                )
             else:
-                # Fallback: get first output
-                output_key = list(output.keys())[0]
-                action_probabilities = tf.nn.softmax(output[output_key]).numpy().reshape(-1)
-        except (KeyError, AttributeError) as e:
-            logger.warning(f"Could not extract action probabilities: {e}")
-            # Fallback: return uniform probabilities
-            action_probabilities = np.ones(len(self.actions)) / len(self.actions)
-
+                raise
+        
+        # Extract action logits - handle different output formats
+        output_keys = list(output.keys())
+        
+        if "action_dist_inputs" in output:
+            action_logits = output["action_dist_inputs"]
+        elif "action_out" in output:
+            action_logits = output["action_out"]
+        elif "logits" in output:
+            action_logits = output["logits"]
+        elif "output_0" in output:
+            action_logits = output["output_0"]
+        elif len(output_keys) == 1:
+            action_logits = output[output_keys[0]]
+        else:
+            action_keys = [k for k in output_keys if 'action' in k.lower()]
+            if action_keys:
+                action_logits = output[action_keys[0]]
+            else:
+                logger.error(f"Unknown output format. Available keys: {output_keys}")
+                raise KeyError(f"Cannot find action logits in model output. Available keys: {output_keys}")
+        
+        # Convert to probabilities
+        action_probabilities = tf.nn.softmax(action_logits).numpy().reshape(-1)
+        
         return action_probabilities.argsort()[::-1]
 
 

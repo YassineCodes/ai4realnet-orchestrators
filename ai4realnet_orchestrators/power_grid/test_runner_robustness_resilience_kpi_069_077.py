@@ -5,11 +5,11 @@ This module implements a SINGLE TestRunner that evaluates defender agents agains
 multiple adversarial attack types and returns different KPI values based on test_id.
 
 KPIs Implemented:
-    - KPI-VF-073: Vulnerability to perturbation
-    - KPI-SF-072: Steps survived with perturbations
-    - KPI-SF-071: Severity of changed output AI agent
     - KPI-DF-069: Drop-off in reward
     - KPI-FF-070: Frequency changed output AI agent
+    - KPI-SF-071: Severity of changed output AI agent
+    - KPI-SF-072: Steps survived with perturbations
+    - KPI-VF-073: Vulnerability to perturbation
     - KPI-AF-074: Area between reward curves
     - KPI-DF-075: Degradation time
     - KPI-RF-076: Restorative time
@@ -19,6 +19,8 @@ Framework Path: Relative to this file at ./framework/
 
 Design: Single evaluation runs ALL attackers once, computes ALL metrics, 
 then returns the appropriate metric based on which KPI is being evaluated.
+
+Author: INESC TEC
 """
 
 import logging
@@ -123,7 +125,7 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
     FRAMEWORK_PATH = FRAMEWORK_PATH
     
     # Evaluation configuration
-    ATTACKER_TYPES = ["Random", "SAC_5","SAC_10","PPO","GEPerturb","RLPerturb", "LambdaPIR"]
+    ATTACKER_TYPES = ["GEPerturb", "LambdaPIR", "Random", "PPO", "SAC_10", "SAC_5", "RLPerturb"]
     NUM_EPISODES = 50
     ENV_NAME = "l2rpn_case14_sandbox"
     
@@ -499,24 +501,23 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
                 if attacker_type == "SAC_5":
                     attacker = SACAttacker(
                         model_path=os.path.join(trained_models_path, "SAC.zip"),
-                        factor=5,  # Less aggressive than SAC_10
+                        factor=5,
                         model_name="SAC_5",
                         pickle_file="sac_5.pkl"
                     )
                 elif attacker_type == "SAC_10":
-                    if attacker_type == "SAC_10":
-                        attacker = SACAttacker(
-                            model_path=os.path.join(trained_models_path, "SAC.zip"),
-                            factor=10,  
-                            model_name="SAC_10",
-                            pickle_file="sac_10.pkl"
-                        )
+                    attacker = SACAttacker(
+                        model_path=os.path.join(trained_models_path, "SAC.zip"),
+                        factor=10,  
+                        model_name="SAC_10",
+                        pickle_file="sac_10.pkl"
+                    )
                 elif attacker_type == "PPO":
-                        attacker = PPOAttacker(
-                            model_path=os.path.join(trained_models_path, "PPO.zip"),
-                            model_name="PPO",
-                            pickle_file="ppo.pkl"
-                        )
+                    attacker = PPOAttacker(
+                        model_path=os.path.join(trained_models_path, "PPO.zip"),
+                        model_name="PPO",
+                        pickle_file="ppo.pkl"
+                    )
                 elif attacker_type == "RLPerturb":
                     attacker = RLPerturbAttacker(
                         model_path=os.path.join(trained_models_path, "RLPerturbAgent", "trained_rlpa_0.pth"),
@@ -527,7 +528,8 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
                 elif attacker_type == "GEPerturb":
                     attacker = GEPerturbAttacker(
                         env=env.env,
-                        agent=self._defender_agent
+                        agent=self._defender_agent, 
+                        n_iter=10
                     )
                 elif attacker_type == "Random":
                     attacker = RPerturbAttacker(
@@ -640,11 +642,10 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
         if not os.path.exists(model_path):
             model_path = temp_dir  # Model might be at root
         
-        # Actions path - use framework's action definitions
-        actions_path = os.path.join(self.FRAMEWORK_PATH, "action_definitions")
+        # Actions path - use framework's action definitions or from zip
+        actions_path = os.path.join(temp_dir, "actions")
         if not os.path.exists(actions_path):
-            # Try to find actions in the zip
-            actions_path = os.path.join(temp_dir, "actions")
+            actions_path = os.path.join(self.FRAMEWORK_PATH, "action_definitions")
         
         agent.load(model_path, actions_path)
         
@@ -673,28 +674,31 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
 
 # ============================================================================
 # Convenience aliases for each KPI (all use the same TestRunner)
+# These allow FAB orchestrator to reference specific KPIs
 # ============================================================================
 
-class TestRunner_KPI_VF_073_Power_Grid(MultiAttackerRobustnessTestRunner):
-    """KPI-VF-073: Vulnerability to perturbation"""
+# Robustness KPIs
+class TestRunner_KPI_DF_069_Power_Grid(MultiAttackerRobustnessTestRunner):
+    """KPI-DF-069: Drop-off in reward"""
+    pass
+
+class TestRunner_KPI_FF_070_Power_Grid(MultiAttackerRobustnessTestRunner):
+    """KPI-FF-070: Frequency changed output AI agent"""
+    pass
+
+class TestRunner_KPI_SF_071_Power_Grid(MultiAttackerRobustnessTestRunner):
+    """KPI-SF-071: Severity of changed output AI agent"""
     pass
 
 class TestRunner_KPI_SF_072_Power_Grid(MultiAttackerRobustnessTestRunner):
     """KPI-SF-072: Steps survived with perturbations"""
     pass
 
-class TestRunner_KPI_SF_071_Power_Grid(MultiAttackerRobustnessTestRunner):
-    """KPI-SF-071: Severity of changed output"""
+class TestRunner_KPI_VF_073_Power_Grid(MultiAttackerRobustnessTestRunner):
+    """KPI-VF-073: Vulnerability to perturbation"""
     pass
 
-class TestRunner_KPI_DF_069_Power_Grid(MultiAttackerRobustnessTestRunner):
-    """KPI-DF-069: Drop-off in reward"""
-    pass
-
-class TestRunner_KPI_FF_070_Power_Grid(MultiAttackerRobustnessTestRunner):
-    """KPI-FF-070: Frequency changed output"""
-    pass
-
+# Resilience KPIs
 class TestRunner_KPI_AF_074_Power_Grid(MultiAttackerRobustnessTestRunner):
     """KPI-AF-074: Area between reward curves"""
     pass
@@ -708,5 +712,5 @@ class TestRunner_KPI_RF_076_Power_Grid(MultiAttackerRobustnessTestRunner):
     pass
 
 class TestRunner_KPI_SF_077_Power_Grid(MultiAttackerRobustnessTestRunner):
-    """KPI-SF-077: Similarity to unperturbed state"""
+    """KPI-SF-077: Similarity state to unperturbed situation"""
     pass

@@ -45,6 +45,21 @@ class Environment:
     def step(self):
         """
         Execute one environment step under attacker-defender dynamics.
+        If an attacker is present:
+            - Perturb the current observation
+            - Compute perturbation delta
+            - Compute defender's action on perturbed and unperturbed observations.
+        Else:
+            - Use unperturbed observation for the defender's action
+
+        Returns:
+            A tuple with:
+                - Flattened new observations vector
+                - Perturbation vector applied to observations
+                - Action taken on perturbed observation
+                - Action taken on original observation
+                - Reward from the environment
+                - Boolean indicating whether the episode is finished.
         """
         if self.attacker == None:
             perturbed_obs = self.obs
@@ -54,10 +69,9 @@ class Environment:
             perturbation = perturbed_obs.to_vect() - self.obs.to_vect()
 
             # Defender action on clean observation for comparison
-            # IMPORTANT: simulated_act=True prevents state updates
             act_unperturbed = self.defender.act(self.obs, 0, False, simulated_act=True)
 
-        # Defender action on perturbed observation (real action)
+        # Defender action on observation
         act = self.defender.act(perturbed_obs, 0, False)
         
         if self.attacker == None:

@@ -18,8 +18,9 @@ def run_local(
   submission_id = uuid.uuid4()
 
   print(f"{DATA_VOLUME_MOUNTPATH}/{submission_id}/{test_id}/")
-  # TODO use versioned dependency instead of latest
-  test_runner.init(submission_data_url="ghcr.io/flatland-association/flatland-baselines:latest", submission_id=submission_id)
+  # TODO use released version
+  test_runner.init(submission_data_url="ghcr.io/flatland-association/flatland-baselines-deadlock-avoidance-heuristic:latest",
+                   submission_id=submission_id)
   test_runner.run()
 
 

@@ -191,8 +191,8 @@ class RLPerturbationAgent(BasePerturbationAgent):
         # Debug: Check what the defender does with perturbation
         perturbed_action = self.agent.act(obs_perturbed, reward=None, done=False)
 
-        if original_action != perturbed_action:
-            print(f"[SUCCESS] Action changed from {original_action} to {perturbed_action}")
+        #if original_action != perturbed_action:
+        #    print(f"[SUCCESS] Action changed from {original_action} to {perturbed_action}")
 
         return obs_perturbed
     

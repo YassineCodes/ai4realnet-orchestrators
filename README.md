@@ -21,16 +21,16 @@ It uses the Python library [fab-clientlib](https://pypi.org/project/fab-clientli
 ## Experiment Workflows
 
 * **offline-loop**: manually upload your test results (JSON) via
-    * FAB UI to initiate a submission
-        * FAB REST API using Python FAB Client Lib
+  * FAB UI to initiate a submission
+    * FAB REST API using Python FAB Client Lib
 * **closed-loop**:
-    * Algorithmic Researcher starts experiment from hub
-    * Orchestrator uploads results (JSON) to hub and closes submission
+  * Algorithmic Researcher starts experiment from hub
+  * Orchestrator uploads results (JSON) to hub and closes submission
 * **interactive-loop**:
-    * Human Factors Researcher starts experiment from hub
+  * Human Factors Researcher starts experiment from hub
   * Orchestrator uploads results (JSON) to hub
-      * Human Factors Researcher complements submission manually via FAB UI or Python CLI
-      * Human Factors Researcher closes submission manually
+    * Human Factors Researcher complements submission manually via FAB UI or Python CLI
+    * Human Factors Researcher closes submission manually
 
 > [!TIP]
 > Beware that interactive-loop is meant here from a technical perspective:  
@@ -85,33 +85,33 @@ Arrows indicate information flow and not control flow.
 
 ```mermaid
 sequenceDiagram
-    participant FAB
-    participant Orchestrator
-    participant TestRunner_TestEvaluator
-    participant HumanFactorsResearcher
-    alt closed-loop
-        FAB ->> Orchestrator: BenchmarkId, SubmissionId, List[TestId], SubmissionDataUrl
-        Orchestrator ->> TestRunner_TestEvaluator: BenchmarkId,TestId,SubmissionId,SubmissionDataUrl
-        TestRunner_TestEvaluator ->> Orchestrator: <TestId>_<SubmissionId>.json
-        Orchestrator ->> FAB: <TestId>_<SubmissionId>.json
-        Orchestrator ->> FAB: close submission
-    else interactive-loop
-        FAB ->> Orchestrator: BenchmarkId, SubmissionId, List[TestId], SubmissionDataUrl
-        Orchestrator ->> TestRunner_TestEvaluator: BenchmarkId,TestId,SubmissionId,SubmissionDataUrl
-        opt automatic partial scoring
-            TestRunner_TestEvaluator ->> Orchestrator: <TestId>_<SubmissionId>.json
-            Orchestrator ->> FAB: upload <TestId>_<SubmissionId>.json
-        end
-        TestRunner_TestEvaluator ->> HumanFactorsResearcher: Any
-        HumanFactorsResearcher ->> FAB: upload/complement/edit <TestId>_<SubmissionId>.json
-        HumanFactorsResearcher ->> FAB: close submission
-    else offline-loop
-        HumanFactorsResearcher ->> TestRunner_TestEvaluator: Any
-        TestRunner_TestEvaluator ->> HumanFactorsResearcher: Any
-        HumanFactorsResearcher ->> FAB: create new submission SubmissionId
-        HumanFactorsResearcher ->> FAB: upload/complement/edit <TestId>_<SubmissionId>.json
-        HumanFactorsResearcher ->> FAB: close submission
+  participant FAB
+  participant Orchestrator
+  participant TestRunner_TestEvaluator
+  participant HumanFactorsResearcher
+  alt closed-loop
+    FAB ->> Orchestrator: BenchmarkId, SubmissionId, List[TestId], SubmissionDataUrl
+    Orchestrator ->> TestRunner_TestEvaluator: BenchmarkId,TestId,SubmissionId,SubmissionDataUrl
+    TestRunner_TestEvaluator ->> Orchestrator: <TestId>_<SubmissionId>.json
+    Orchestrator ->> FAB: <TestId>_<SubmissionId>.json
+    Orchestrator ->> FAB: close submission
+  else interactive-loop
+    FAB ->> Orchestrator: BenchmarkId, SubmissionId, List[TestId], SubmissionDataUrl
+    Orchestrator ->> TestRunner_TestEvaluator: BenchmarkId,TestId,SubmissionId,SubmissionDataUrl
+    opt automatic partial scoring
+      TestRunner_TestEvaluator ->> Orchestrator: <TestId>_<SubmissionId>.json
+      Orchestrator ->> FAB: upload <TestId>_<SubmissionId>.json
     end
+    TestRunner_TestEvaluator ->> HumanFactorsResearcher: Any
+    HumanFactorsResearcher ->> FAB: upload/complement/edit <TestId>_<SubmissionId>.json
+    HumanFactorsResearcher ->> FAB: close submission
+  else offline-loop
+    HumanFactorsResearcher ->> TestRunner_TestEvaluator: Any
+    TestRunner_TestEvaluator ->> HumanFactorsResearcher: Any
+    HumanFactorsResearcher ->> FAB: create new submission SubmissionId
+    HumanFactorsResearcher ->> FAB: upload/complement/edit <TestId>_<SubmissionId>.json
+    HumanFactorsResearcher ->> FAB: close submission
+  end
 ```
 
 ## TL;DR;
@@ -121,7 +121,47 @@ sequenceDiagram
 In your domain-specific infrastructure:
 
 1. Clone this repo.
-2. Run orchestrator: The following command loads the railway orchestrator in the background:
+2. Implement orchestrator:
+
+- In your `<domain>/orchestrator.py`, uncomment the test runner for the KPI you want to implement
+  - Implement the test runner:
+    ```python
+    from ai4realnet_orchestrators.test_runner import TestRunner
+    def load_submission_data(submission_data_url: str):
+        raise NotImplementedError()
+  
+    def load_model(submission_data):
+      raise NotImplementedError()
+  
+    def load_scenario_data(scenario_id: str):
+      raise NotImplementedError()
+    
+    class YourTestRunner(TestRunner):
+      def init(self, submission_data_url: str):
+        super().init(submission_data_url=submission_data_url)
+        submission_data = load_submission_data(submission_data_url)
+        self.model = load_model(submission_data)
+  
+      def run_scenario(self, scenario_id: str, submission_id: str):
+        # here you would implement the logic to run the test for the scenario:
+        scenario_data = load_scenario_data(scenario_id)
+        model = self.model
+  
+        # data and other stuff initialized in the init method can be used here
+        # for demonstration, we return a dummy result
+        return {
+          "primary": -999,
+        }
+    ```
+    * `load_scenario_data`: map the `scenario_id` to your test configuration, e.g. path to data you want to load for the KPI
+    * `load_submission_data`: get the submission data from the string, e.g. parse the opaque `submission_data_url` string or fetch data from URL
+    * `load_model`: load the model from the submission data, e.g. pull a Docker image from a remote registry
+    * `return` a dict containing the scenario scores (floats); by default, there is one field called `primary`;
+      * please contact Flatland Association if you need to change or have secondary fields as well.
+      * the full configuration can be found [here (json)](https://github.com/flatland-association/flatland-benchmarks/blob/main/definitions/ai4realnet/ai4realnet_definitions.json) and [here (sql)](https://github.com/flatland-association/flatland-benchmarks/blob/main/definitions/ai4realnet/ai4realnet_definitions.sql)
+
+
+3. Run orchestrator: The following command loads the railway orchestrator in the background:
 
 ```shell
 export DOMAIN="Railway"

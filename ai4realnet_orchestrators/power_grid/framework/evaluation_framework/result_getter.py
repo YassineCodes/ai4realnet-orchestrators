@@ -94,7 +94,7 @@ class result_getter:
                 # ============================================================
                 # TIMING: Print progress every 10 steps
                 # ============================================================
-                if steps % 10 == 0:
+                if False and steps % 500 == 0:
                     # Get last 10 steps for average
                     last_10_steps = step_times[-10:] if len(step_times) >= 10 else step_times
                     avg_step_time = sum(last_10_steps) / len(last_10_steps)

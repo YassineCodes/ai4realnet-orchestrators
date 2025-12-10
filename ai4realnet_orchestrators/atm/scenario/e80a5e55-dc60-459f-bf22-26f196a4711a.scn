@@ -1,0 +1,15 @@
+#-------------------------------------------------------------------------------
+#   AI4REALNET D1.4 BlueSky scenario for testing the RL models on random 
+#   Authors: Giulia Leto
+#   Date: Nov 2025
+#
+#   Instructions: 
+#   - the batch scenario loaded is contained in the file 'ai4realnet_deploy_RL_batch.scn'
+#   - the parameters of the scenario can be modified in that file directly. 
+#     Specific parameters hardcoded in the plugin can be made accessible from
+#     the scenario file upon request.
+#
+#-------------------------------------------------------------------------------
+
+00:00:00.00>plugin deployRL_batch
+00:00:00.00>detached_batch ai4realnet_deploy_RL_batch/ai4realnet_deploy_RL_batch.scn

@@ -19,6 +19,8 @@ class GEPerturbAttacker(BaseAttackerClass):
     """
 
     def __init__(self, env, agent, **kwargs):
+        print(f"[DEBUG] GEPerturbAttacker received agent type: {type(agent)}")
+        print(f"[DEBUG] agent.agent type: {type(agent.agent) if hasattr(agent, 'agent') else 'NO .agent attribute!'}")
         self.model_name = "GEPerturbAttacker"
         self.pickle_file = "ge_perturb_attacker.pkl"
         self.env = env

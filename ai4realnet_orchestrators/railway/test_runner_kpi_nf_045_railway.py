@@ -2,6 +2,7 @@ import ast
 import logging
 import os
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 from flatland.envs.step_utils.states import TrainState
@@ -26,12 +27,9 @@ class TestRunner_KPI_NF_045_Railway(AbtractTestRunnerRailway):
     data_dir_no_malfunction = f"{DATA_VOLUME_MOUNTPATH}/{submission_id}/{self.test_id}/{scenario_id}/no_malfunction"
     generate_policy_args_no_malfunction = [
       "--data-dir", data_dir_no_malfunction,
-      # TODO use different image for different baselines or encode in submission_data_url?
-      "--policy-pkg", "flatland_baselines.deadlock_avoidance_heuristic.policy.deadlock_avoidance_policy", "--policy-cls", "DeadLockAvoidancePolicy",
-      "--obs-builder-pkg", "flatland_baselines.deadlock_avoidance_heuristic.observation.full_env_observation", "--obs-builder-cls", "FullEnvObservation",
       "--rewards-pkg", "flatland.envs.rewards", "--rewards-cls", "PunctualityRewards",
       # TODO https://github.com/flatland-association/flatland-rl/issues/278 disable malfunction generator and replace with effects generator - a bit hacky for now, clean up later...
-      "--malfunction_interval", "-1",
+      "--malfunction-interval", "-1",
       "--effects-generator-pkg", "flatland.core.effects_generator", "--effects-generator-cls", "EffectsGenerator",
       "--ep-id", scenario_id,
       "--env-path", f"{SCENARIOS_VOLUME_MOUNTPATH}/{env_path}"
@@ -41,13 +39,9 @@ class TestRunner_KPI_NF_045_Railway(AbtractTestRunnerRailway):
     data_dir_with_malfunction = f"{DATA_VOLUME_MOUNTPATH}/{submission_id}/{self.test_id}/{scenario_id}/with_malfunction"
     generate_policy_args_one_malfunction = [
       "--data-dir", data_dir_with_malfunction,
-      "--policy-pkg", "flatland_baselines.deadlock_avoidance_heuristic.policy.deadlock_avoidance_policy", "--policy-cls",
-      "DeadLockAvoidancePolicy",
-      "--obs-builder-pkg", "flatland_baselines.deadlock_avoidance_heuristic.observation.full_env_observation", "--obs-builder-cls",
-      "FullEnvObservation",
       "--rewards-pkg", "flatland.envs.rewards", "--rewards-cls", "PunctualityRewards",
       # TODO https://github.com/flatland-association/flatland-rl/issues/278 disable malfunction generator and replace with effects generator - a bit hacky for now, clean up later...
-      "--malfunction_interval", "-1",
+      "--malfunction-interval", "-1",
       "--effects-generator-pkg", "flatland.envs.malfunction_effects_generators", "--effects-generator-cls",
       "ConditionalMalfunctionEffectsGenerator",
       "--effects-generator-kwargs", "earliest_malfunction", f"{earliest_malfunction}",
@@ -64,8 +58,7 @@ class TestRunner_KPI_NF_045_Railway(AbtractTestRunnerRailway):
     self.exec(generate_policy_args_one_malfunction, scenario_id, submission_id, f"{submission_id}/{self.test_id}/{scenario_id}/with_malfunction")
 
     # no malfunction
-    trajectory_no_malfunction = Trajectory(data_dir=data_dir_no_malfunction, ep_id=scenario_id)
-    trajectory_no_malfunction.load()
+    trajectory_no_malfunction = Trajectory.load_existing(data_dir=Path(data_dir_no_malfunction), ep_id=scenario_id)
     num_agents = trajectory_no_malfunction.trains_rewards_dones_infos["agent_id"].max() + 1
     for _, r in trajectory_no_malfunction.trains_rewards_dones_infos.iterrows():
       assert r["info"]["malfunction"] == 0
@@ -79,8 +72,7 @@ class TestRunner_KPI_NF_045_Railway(AbtractTestRunnerRailway):
     num_betroffen1 = np.sum(betroffen1)
     logger.info(f"num_betroffen1 {num_betroffen1}")
 
-    trajectory_with_malfunction = Trajectory(data_dir=data_dir_with_malfunction, ep_id=scenario_id)
-    trajectory_with_malfunction.load()
+    trajectory_with_malfunction = Trajectory.load_existing(data_dir=Path(data_dir_with_malfunction), ep_id=scenario_id)
     malfunction_agents = defaultdict(list)
     for _, r in trajectory_with_malfunction.trains_rewards_dones_infos.iterrows():
       if r["info"]["malfunction"] > 0:

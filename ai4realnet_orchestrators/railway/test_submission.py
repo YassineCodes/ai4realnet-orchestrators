@@ -40,8 +40,8 @@ def test_submit(
     SubmissionsPostRequest(
       benchmark_id=benchmark_id,
       name=submission_name,
-      # TODO use versioned dependency instead of latest
-      submission_data_url="ghcr.io/flatland-association/flatland-baselines:latest",
+      # TODO use released version
+      submission_data_url="ghcr.io/flatland-association/flatland-baselines-deadlock-avoidance-heuristic:latest",
       test_ids=[test_id])
   )
 

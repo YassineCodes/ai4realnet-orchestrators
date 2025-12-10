@@ -1,11 +1,31 @@
-# test_local.py
+"""
+Local Test Script for Robustness & Resilience Framework
+========================================================
+
+Runs the multi-attacker evaluation framework LOCALLY without the FAB 
+orchestrator. Use for development, debugging, and testing agents before 
+submission.
+
+Usage:
+    python test_local.py
+
+Note: 
+    This bypasses Celery/RabbitMQ orchestration. For production, use FAB.
+
+Author: INESC TEC
+"""
 
 import os
 import sys
+import warnings
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore")
+os.environ["KMP_WARNINGS"] = "0"
+
 import zipfile
 import tempfile
-import warnings
-warnings.filterwarnings("ignore", category=FutureWarning)
+
 # ============================================================
 # PATH SETUP - Must be done BEFORE any imports
 # ============================================================
@@ -35,7 +55,7 @@ print(f"Framework directory: {FRAMEWORK_DIR}")
 # NOW we can import (paths are set up)
 # ============================================================
 
-from power_grid_test_runner import MultiAttackerRobustnessTestRunner
+from test_runner_robustness_resilience_kpi_069_077 import MultiAttackerRobustnessTestRunner
 
 runner = MultiAttackerRobustnessTestRunner(
     test_id="b8a9a411-7cfe-4c1d-b9a6-eef1c0efe920",
@@ -83,7 +103,8 @@ try:
     model_path = os.path.join(temp_dir, "model")
     actions_path = os.path.join(temp_dir, "actions")
     
-    agent.load(model_path, actions_path)
+    agent.load(model_path, actions_path, best_action_threshold=0.95)
+    
     runner._defender_agent = agent
     
     print("✅ Agent loaded!")

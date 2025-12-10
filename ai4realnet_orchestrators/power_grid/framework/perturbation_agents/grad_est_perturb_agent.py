@@ -85,6 +85,7 @@ class GradientEstimationPerturbationAgent(BasePerturbationAgent):
         # Get agent's preferred action for this observation
         _, target_action_idx = self.agent.act_with_id(obs)
         
+    
         if target_action_idx < 0:
             # No specific action targeted, return unperturbed observation
             self.perturb_hist.append(np.zeros_like(obs_perturbed.to_vect()))
@@ -116,28 +117,50 @@ class GradientEstimationPerturbationAgent(BasePerturbationAgent):
         # Create perturbed versions for gradient estimation
         perturbed_vectors = obs_vector[0] + self.grad_helper
         
-        # Get model predictions for all perturbed versions
-        # Handle different model types
-        if hasattr(self.agent.model, 'predict'):
-            predictions = self.agent.model.predict(perturbed_vectors, verbose=0)[0]
-        elif hasattr(self.agent.model, '__call__'):
-            # TensorFlow SavedModel
-            import tensorflow as tf
-            output = self.agent.model(tf.constant(perturbed_vectors, dtype=tf.float32))
-            # Handle different output types
-            if isinstance(output, list):
-                predictions = output[0].numpy() if hasattr(output[0], 'numpy') else np.array(output[0])
-            elif hasattr(output, 'numpy'):
-                predictions = output.numpy()
+        # Get model predictions - handle both Keras and SavedModel formats
+        if isinstance(self.agent.model, tf.keras.models.Model):
+            # Keras model - use batch prediction
+            raw_predictions = self.agent.model.predict(perturbed_vectors, verbose=0)
+            
+            # Handle different model output formats
+            if isinstance(raw_predictions, (list,tuple)):
+                # Functional model returns (logits, values)
+                raw_predictions = raw_predictions[0]
+
+            raw_predictions = np.asarray(raw_predictions)
+
+
+            # Convert to probabilities - handle both 2D and 3D outputs
+            if raw_predictions.ndim == 2:
+                # Shape: (batch, n_actions)
+                probabilities = tf.nn.softmax(raw_predictions, axis=1).numpy()
             else:
-                predictions = np.array(output)
+                # Shape might be (batch, 1, n_actions) or similar
+                raw_predictions = raw_predictions.reshape(
+                    raw_predictions.shape[0], -1
+                )
+                probabilities = tf.nn.softmax(raw_predictions, axis=-1).numpy()
+            
         else:
-            raise AttributeError(f"Model type {type(self.agent.model)} not supported")
-        
-        # Convert to probabilities
-        probabilities = np.array([
-            tf.nn.softmax(pred).numpy().reshape(-1) for pred in predictions
-        ])
+            
+            signature_fn = self.agent.model.signatures["serving_default"]            
+            
+            output = signature_fn(
+                observations=tf.convert_to_tensor(perturbed_vectors, dtype=tf.float32)
+            )
+            
+            # Extract action logits - prioritize action_out
+            if "action_out" in output:
+                logits = output["action_out"]
+            elif "action_dist_inputs" in output:
+                logits = output["action_dist_inputs"]
+            elif "output_0" in output:
+                logits = output["output_0"]
+            else:
+                # Use first available output
+                logits = output[list(output.keys())[0]]
+            
+            probabilities = tf.nn.softmax(logits, axis=-1).numpy()
         
         # Compute finite difference gradient
         n_dims = obs_vector.shape[1]

@@ -198,3 +198,11 @@ cython_debug/
 *.iml
 
 .DS_Store
+
+# Bluesky logs
+*.csv
+ai4realnet_orchestrators/atm/cache/
+ai4realnet_orchestrators/atm/current_scenfile.txt
+test.py
+ai4realnet_orchestrators/atm/scenario/ic.scn
+ai4realnet_orchestrators/atm/scenario/ai4realnet_deploy_RL_batch/generated_scenarios/

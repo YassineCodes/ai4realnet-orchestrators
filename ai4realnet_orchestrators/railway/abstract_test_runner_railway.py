@@ -38,7 +38,6 @@ class AbtractTestRunnerRailway(TestRunner):
                "--rm",
                "-v", f"{DATA_VOLUME}:{DATA_VOLUME_MOUNTPATH}",
                "-v", f"{SCENARIOS_VOLUME}:{SCENARIOS_VOLUME_MOUNTPATH}",
-               "--entrypoint", "/bin/bash",
                # Don't allow subprocesses to raise privileges, see https://github.com/codalab/codabench/blob/43e01d4bc3de26e8339ddb1463eef7d960ddb3af/compute_worker/compute_worker.py#L520
                "--security-opt=no-new-privileges",
                # Don't buffer python output, so we don't lose any
@@ -46,8 +45,7 @@ class AbtractTestRunnerRailway(TestRunner):
                # for integration tests with localhost http
                "-e", "OAUTHLIB_INSECURE_TRANSPORT=1",
                self.submission_data_url,
-               # TODO get rid of hard-coded path in flatland-baselines
-               "/home/conda/entrypoint_generic.sh", "flatland-trajectory-generate-from-policy",
+               "flatland-trajectory-generate-from-policy",
              ] + generate_policy_args
       exec_with_logging(args if not SUDO else ["sudo"] + args, log_level_stdout=logging.DEBUG)
 
