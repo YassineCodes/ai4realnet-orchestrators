@@ -27,6 +27,10 @@ class GEPerturbAttacker(BaseAttackerClass):
 
         # Wraps the agent with a gradient-estimation perturbation attacker
         self.model = GradientEstimationPerturbationAgent(self.env.observation_space, agent.agent, **kwargs)
+        super().__init__(name=self.model_name)
+
+    def load(self, path):
+        pass
 
 
     def perturb(self, obs):

@@ -122,7 +122,8 @@ class LambdaPIRAttacker(BaseAttackerClass):
             
             # Load and initialize perturbation agent
             self.perturbation_agent = self._load_lambda_pir_model()
-            
+            super().__init__(name=name)
+
             # Statistics tracking
             self.stats = {
                 "total_perturbations": 0,
@@ -175,6 +176,10 @@ class LambdaPIRAttacker(BaseAttackerClass):
             logger.error(f"[ERROR] Perturbation failed: {e}")
             logger.error(traceback.format_exc())
             return obs.copy()
+
+    def load(self, path):
+        self.model_path = str(path)
+        self.perturbation_agent = self._load_lambda_pir_model()
 
     def _load_lambda_pir_model(self) -> LambdaPIRPerturbationAgent:
         """
