@@ -3,3 +3,12 @@
 pandas<3
 # TODO use versioned dependency instead of branch
 git+https://github.com/flatland-association/flatland-rl.git@main
+
+# additional requirements for the robustness/resilience KPIs (069-077)
+# see README_robustness_resilience_kpi_069_077.md
+numpy
+scipy
+matplotlib
+# torch is optional: without it the PPO, SAC and RLPerturb attackers fall back to
+# a no-op and their KPI contributions are meaningless, so install it for real runs
+torch

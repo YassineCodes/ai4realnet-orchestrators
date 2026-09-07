@@ -8,6 +8,18 @@ from ai4realnet_orchestrators.railway.test_runner_kpi_df_016_railway import Test
 from ai4realnet_orchestrators.railway.test_runner_kpi_nf_045_railway import TestRunner_KPI_NF_045_Railway
 from ai4realnet_orchestrators.railway.test_runner_kpi_pf_026_railway import TestRunner_KPI_PF_026_Railway
 from ai4realnet_orchestrators.railway.test_runner_kpi_rs_058_railway import TestRunner_KPI_RS_058_Railway
+from ai4realnet_orchestrators.railway.test_runner_robustness_resilience_kpi_069_077 import (
+  TestRunner_KPI_DF_069_Railway,
+  TestRunner_KPI_FF_070_Railway,
+  TestRunner_KPI_SF_071_Railway,
+  TestRunner_KPI_SF_072_Railway,
+  TestRunner_KPI_VF_073_Railway,
+  TestRunner_KPI_AF_074_Railway,
+  TestRunner_KPI_DF_075_Railway,
+  TestRunner_KPI_RF_076_Railway,
+  TestRunner_KPI_SF_077_Railway,
+  TestRunner_KPI_RF_078_Railway,
+)
 
 railway_orchestrator = Orchestrator(
   test_runners={
@@ -316,55 +328,55 @@ railway_orchestrator = Orchestrator(
       ], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
     ),
     #
-    #     # KPI-DF-069: Drop-off in reward (Railway)
-    #     "a94c858e-4bc3-4d67-bd78-5c81506e39f7": TestRunner_KPI_DF_069_Railway(
-    #         test_id="a94c858e-4bc3-4d67-bd78-5c81506e39f7", scenario_ids=['74dd5830-6e59-423f-89f4-b050319db14e'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
-    #     ),
+    # KPI-DF-069: Drop-off in reward (Railway)
+    "a94c858e-4bc3-4d67-bd78-5c81506e39f7": TestRunner_KPI_DF_069_Railway(
+      test_id="a94c858e-4bc3-4d67-bd78-5c81506e39f7", scenario_ids=['74dd5830-6e59-423f-89f4-b050319db14e'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
+    ),
     #
-    #     # KPI-FF-070: Frequency changed output AI agent (Railway)
-    #     "5abadf6b-991c-4d37-810f-f77bb71d490d": TestRunner_KPI_FF_070_Railway(
-    #         test_id="5abadf6b-991c-4d37-810f-f77bb71d490d", scenario_ids=['ffcadd8d-207a-49af-8b09-54e922642f01'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
-    #     ),
+    # KPI-FF-070: Frequency changed output AI agent (Railway)
+    "5abadf6b-991c-4d37-810f-f77bb71d490d": TestRunner_KPI_FF_070_Railway(
+      test_id="5abadf6b-991c-4d37-810f-f77bb71d490d", scenario_ids=['ffcadd8d-207a-49af-8b09-54e922642f01'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
+    ),
     #
-    #     # KPI-SF-071: Severity of changed output AI agent (Railway)
-    #     "dce32e78-e827-4994-a0a2-06feee2528cc": TestRunner_KPI_SF_071_Railway(
-    #         test_id="dce32e78-e827-4994-a0a2-06feee2528cc", scenario_ids=['588ae37c-f583-47df-9154-ca12c9ac134a'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
-    #     ),
+    # KPI-SF-071: Severity of changed output AI agent (Railway)
+    "dce32e78-e827-4994-a0a2-06feee2528cc": TestRunner_KPI_SF_071_Railway(
+      test_id="dce32e78-e827-4994-a0a2-06feee2528cc", scenario_ids=['588ae37c-f583-47df-9154-ca12c9ac134a'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
+    ),
     #
-    #     # KPI-SF-072: Steps survived with perturbations (Railway)
-    #     "e5206c56-75a0-41fa-9db3-bec66359337e": TestRunner_KPI_SF_072_Railway(
-    #         test_id="e5206c56-75a0-41fa-9db3-bec66359337e", scenario_ids=['8011c7bd-6082-4653-8d9d-887d23f1ec5c'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
-    #     ),
+    # KPI-SF-072: Steps survived with perturbations (Railway)
+    "e5206c56-75a0-41fa-9db3-bec66359337e": TestRunner_KPI_SF_072_Railway(
+      test_id="e5206c56-75a0-41fa-9db3-bec66359337e", scenario_ids=['8011c7bd-6082-4653-8d9d-887d23f1ec5c'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
+    ),
     #
-    #     # KPI-VF-073: Vulnerability to perturbation (Railway)
-    #     "0ddba8a7-5ef8-45d1-b0d6-0842bc44d2cc": TestRunner_KPI_VF_073_Railway(
-    #         test_id="0ddba8a7-5ef8-45d1-b0d6-0842bc44d2cc", scenario_ids=['47a11418-fad5-4d55-a637-6b90a8351500'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
-    #     ),
+    # KPI-VF-073: Vulnerability to perturbation (Railway)
+    "0ddba8a7-5ef8-45d1-b0d6-0842bc44d2cc": TestRunner_KPI_VF_073_Railway(
+      test_id="0ddba8a7-5ef8-45d1-b0d6-0842bc44d2cc", scenario_ids=['47a11418-fad5-4d55-a637-6b90a8351500'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
+    ),
     #
-    #     # KPI-RF-078: Reward per action (Railway)
-    #     "8ebc88f0-896c-4910-8997-a44d107e7eb7": TestRunner_KPI_RF_078_Railway(
-    #         test_id="8ebc88f0-896c-4910-8997-a44d107e7eb7", scenario_ids=['dc8195e4-266d-4afb-ba60-2659f59acfa4'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
-    #     ),
+    # KPI-RF-078: Reward per action (Railway)
+    "8ebc88f0-896c-4910-8997-a44d107e7eb7": TestRunner_KPI_RF_078_Railway(
+      test_id="8ebc88f0-896c-4910-8997-a44d107e7eb7", scenario_ids=['dc8195e4-266d-4afb-ba60-2659f59acfa4'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
+    ),
     #
-    #     # KPI-AF-074: Area between reward curves (Railway)
-    #     "707a1a4e-7073-432b-94fc-af4a5ee9f07d": TestRunner_KPI_AF_074_Railway(
-    #         test_id="707a1a4e-7073-432b-94fc-af4a5ee9f07d", scenario_ids=['a9e3fbf7-b5d5-477d-a0c8-d23880237d2d'], benchmark_id="31ea606b-681a-437a-85b9-7c81d4ccc287"
-    #     ),
+    # KPI-AF-074: Area between reward curves (Railway)
+    "707a1a4e-7073-432b-94fc-af4a5ee9f07d": TestRunner_KPI_AF_074_Railway(
+      test_id="707a1a4e-7073-432b-94fc-af4a5ee9f07d", scenario_ids=['a9e3fbf7-b5d5-477d-a0c8-d23880237d2d'], benchmark_id="31ea606b-681a-437a-85b9-7c81d4ccc287"
+    ),
     #
-    #     # KPI-DF-075: Degradation time (Railway)
-    #     "2c4be118-6108-43b3-b09f-a4bee842167a": TestRunner_KPI_DF_075_Railway(
-    #         test_id="2c4be118-6108-43b3-b09f-a4bee842167a", scenario_ids=['dc03b9f1-bfb2-44b8-b124-f7eede10e0a7'], benchmark_id="31ea606b-681a-437a-85b9-7c81d4ccc287"
-    #     ),
+    # KPI-DF-075: Degradation time (Railway)
+    "2c4be118-6108-43b3-b09f-a4bee842167a": TestRunner_KPI_DF_075_Railway(
+      test_id="2c4be118-6108-43b3-b09f-a4bee842167a", scenario_ids=['dc03b9f1-bfb2-44b8-b124-f7eede10e0a7'], benchmark_id="31ea606b-681a-437a-85b9-7c81d4ccc287"
+    ),
     #
-    #     # KPI-RF-076: Restorative time (Railway)
-    #     "2cac54e0-aaf3-4f22-8307-f23878c432f0": TestRunner_KPI_RF_076_Railway(
-    #         test_id="2cac54e0-aaf3-4f22-8307-f23878c432f0", scenario_ids=['56160b90-a287-4dec-acc7-f40967d60fa0'], benchmark_id="31ea606b-681a-437a-85b9-7c81d4ccc287"
-    #     ),
+    # KPI-RF-076: Restorative time (Railway)
+    "2cac54e0-aaf3-4f22-8307-f23878c432f0": TestRunner_KPI_RF_076_Railway(
+      test_id="2cac54e0-aaf3-4f22-8307-f23878c432f0", scenario_ids=['56160b90-a287-4dec-acc7-f40967d60fa0'], benchmark_id="31ea606b-681a-437a-85b9-7c81d4ccc287"
+    ),
     #
-    #     # KPI-SF-077: Similarity state to unperturbed situation (Railway)
-    #     "d432299f-dbee-46ba-9e15-77954086440a": TestRunner_KPI_SF_077_Railway(
-    #         test_id="d432299f-dbee-46ba-9e15-77954086440a", scenario_ids=['367a8b12-1b87-42f1-9400-4ecf96d6b617'], benchmark_id="31ea606b-681a-437a-85b9-7c81d4ccc287"
-    #     ),
+    # KPI-SF-077: Similarity state to unperturbed situation (Railway)
+    "d432299f-dbee-46ba-9e15-77954086440a": TestRunner_KPI_SF_077_Railway(
+      test_id="d432299f-dbee-46ba-9e15-77954086440a", scenario_ids=['367a8b12-1b87-42f1-9400-4ecf96d6b617'], benchmark_id="31ea606b-681a-437a-85b9-7c81d4ccc287"
+    ),
     #
     #     # KPI-RS-091: Reflection on operator trust  (Railway)
     #     "9e680ab9-c861-4dd7-a5ea-abbdc1a91088": TestRunner_KPI_RS_091_Railway(
