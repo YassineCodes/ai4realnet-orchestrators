@@ -6,6 +6,12 @@ from scipy.integrate import trapezoid
 from scipy.signal import find_peaks
 
 
+# KPI-RF-078: Reward per action.
+# Headline number is reward_per_action_ratio = perturbed / unperturbed. A submission
+# is considered to hold up under attack when the ratio is at or above this threshold.
+REWARD_PER_ACTION_TARGET_RATIO = 0.90
+
+
 class metrics:
     """
         Class for computing robustness and resilience metrics for reinforcement learning agents under perturbations.
@@ -32,7 +38,8 @@ class metrics:
             compute_perturb_prop_single_ep(...): Computes the proportion of significant perturbations that result in changed actions for a single episode.
     """
 
-    def __init__(self, data_dict_perturbed, data_dict_unperturbed, do_nothing_action, similarity_score_fn, model_name=""):
+    def __init__(self, data_dict_perturbed, data_dict_unperturbed, do_nothing_action, similarity_score_fn, model_name="",
+                 recovery_action_fn=None):
         """
             Initializes the metrics instance and computes robustness and resilience metrics for the provided episodes.
             Args:
@@ -41,6 +48,10 @@ class metrics:
                 do_nothing_action (np.ndarray): The action representing a 'do nothing' or baseline action in the environment.
                 similarity_score_fn (Callable): Function to compute similarity scores between two actions passed as np.ndarrays.
                 model_name (str, optional): Name of the model being evaluated. Defaults to an empty string.
+                recovery_action_fn (Callable, optional): Predicate `f(action_vect) -> bool` marking an
+                    action as a topology-recovery action (see KPI-RF-078 notes on
+                    `get_reward_per_action_single_ep`). When omitted, `n_actions_excl_recovery`
+                    and its derived columns are NaN rather than silently wrong.
         """
 
         obs_unperturb = data_dict_unperturbed["observations"]
@@ -51,7 +62,13 @@ class metrics:
         rewards_unperturbed = data_dict_unperturbed["rewards"]
         rewards_perturbed = data_dict_perturbed["rewards"]
 
+        # KPI-RF-078 needs the action stream of the BASELINE rollout, which is a different
+        # rollout from actions_unperturbed (the counterfactual actions recorded *inside* the
+        # perturbed rollout). Older pickles predate this and simply yield NaN.
+        actions_baseline = data_dict_unperturbed.get("actions", None)
+
         self.similarity_score_fn = similarity_score_fn
+        self.recovery_action_fn = recovery_action_fn
         self.model_name = model_name
 
         self.rewards_unperturbed = rewards_unperturbed
@@ -60,16 +77,22 @@ class metrics:
         self.metrics_robustness, self.metrics_resilience, self.metrics_resilience_obs_sim = None, None, None
 
         self.compute_metrics(obs_unperturb, obs_perturb, perturbations, actions_unperturbed, actions_perturbed, 
-                            rewards_unperturbed, rewards_perturbed, do_nothing_action)
+                            rewards_unperturbed, rewards_perturbed, do_nothing_action,
+                            actions_baseline=actions_baseline)
 
 
     def compute_metrics(self, obs_unperturb, obs_perturb, perturbations, actions_unperturbed, actions_perturbed, rewards_unperturbed, 
-            rewards_perturbed, do_nothing_action):
+            rewards_perturbed, do_nothing_action, actions_baseline=None):
         # initialize lists to store metrics
         metrics_robustness, metrics_resilience, metrics_resilience_obs_sim = [[] for _ in range(3)]
 
         # initialize list of columns for metrics 
-        cols_robustness = ["episode", "n_steps_with_act", "n_actions_changed", "similarity_score", "total_reward", "n_steps", "ave_reward_per_step"]
+        # KPI-RF-078 columns are APPENDED, never inserted: existing CSVs in test_results/
+        # are indexed positionally, so the first seven positions must not move.
+        cols_robustness = ["episode", "n_steps_with_act", "n_actions_changed", "similarity_score", "total_reward", "n_steps", "ave_reward_per_step",
+                           "n_actions", "n_actions_excl_recovery", "ave_reward_per_action",
+                           "n_actions_unperturbed", "ave_reward_per_action_unperturbed",
+                           "reward_per_action_ratio"]
         cols_resilience = ["episode", "degradation_time", "restoration_time", "min_reward", "max_reward", "n_steps", "area", "n_degr_states"]
             
         self.cos_similarity_all = []
@@ -90,7 +113,30 @@ class metrics:
             # compute robustness metrics and similarity in observation
             cos_similarity, euclidean_dist, actions_changed, similarity_score, n_actions = self.get_robustness_metrics_single_ep(obs_unperturb[ep], obs_perturb[ep], actions_unperturbed[ep], actions_perturbed[ep], do_nothing_action)  
             r = [x for x in rewards_perturbed[ep] if not isna(x)]
-            metrics_robustness_ep = [ep, n_actions, actions_changed, similarity_score, sum(r), len(r), sum(r) / len(r)]
+
+            # ---- KPI-RF-078: reward per action (perturbed rollout) ----
+            rpa = self.get_reward_per_action_single_ep(
+                actions_perturbed[ep], rewards_perturbed[ep], do_nothing_action
+            )
+            # ---- KPI-RF-078: same measurement on the unperturbed baseline rollout ----
+            if actions_baseline is not None and ep < len(actions_baseline):
+                rpa_base = self.get_reward_per_action_single_ep(
+                    actions_baseline[ep], rewards_unperturbed[ep], do_nothing_action
+                )
+            else:
+                rpa_base = {"n_actions": np.nan, "n_actions_excl_recovery": np.nan,
+                            "total_reward": np.nan, "ave_reward_per_action": np.nan}
+
+            base_rpa = rpa_base["ave_reward_per_action"]
+            if isna(base_rpa) or base_rpa == 0:
+                # Undefined rather than 0: a zero/absent baseline carries no information.
+                reward_per_action_ratio = np.nan
+            else:
+                reward_per_action_ratio = rpa["ave_reward_per_action"] / base_rpa
+
+            metrics_robustness_ep = [ep, n_actions, actions_changed, similarity_score, sum(r), len(r), sum(r) / len(r),
+                                     rpa["n_actions"], rpa["n_actions_excl_recovery"], rpa["ave_reward_per_action"],
+                                     rpa_base["n_actions"], base_rpa, reward_per_action_ratio]
             metrics_robustness.append(metrics_robustness_ep)
 
             # compute resilience metrics
@@ -111,6 +157,12 @@ class metrics:
         metrics_robustness[metrics_robustness.columns[2:]] = metrics_robustness[metrics_robustness.columns[2:]].astype(float)
         self.metrics_robustness = metrics_robustness
 
+        # KPI-RF-078 headline figure, pooled over episodes as sum(reward)/sum(actions).
+        # NOT the mean of the per-episode ratios: episodes differ in length and in how
+        # often the agent fires, so a plain mean would weight a 10-step episode the same
+        # as a 1000-step one.
+        self.reward_per_action = self.aggregate_reward_per_action(metrics_robustness)
+
         # combine resilience metrics and get the mean for each perturbation agent
         metrics_resilience = pd.DataFrame(metrics_resilience, columns=cols_resilience)
         metrics_resilience = pd.DataFrame(self.aggregate_metrics_resilience(metrics_resilience)).T
@@ -127,6 +179,133 @@ class metrics:
         np.seterr(divide = 'warn', invalid='warn')
 
         return metrics_robustness, metrics_resilience, metrics_resilience_obs_sim, perturb_vulnerability
+
+    def get_reward_per_action_single_ep(self, actions, rewards, do_nothing_action):
+        """
+        Computes KPI-RF-078 (reward per action) for a single episode.
+
+        WHAT COUNTS AS AN ACTION
+        ------------------------
+        A step counts as an action when the agent returned anything other than the
+        environment's do-nothing action, i.e. `(act != do_nothing_action).any()`. This is
+        the same rule already used for the `n_steps_with_act` column, reused deliberately
+        so the two columns stay consistent.
+
+        This matters because the defender is gated: `my_agent.act_with_id()` only consults
+        the policy once `observation.rho.max()` reaches `best_action_threshold`. Below that
+        it returns a default action, so actions are a small fraction of steps and
+        `ave_reward_per_step` mostly tracks episode length rather than the value of each
+        intervention.
+
+        TOPOLOGY-RECOVERY ACTIONS ARE COUNTED
+        -------------------------------------
+        In the safe branch the agent still emits `revert_topo(...)` (when `self.topo` is
+        set) and `find_best_line_to_reconnect(...)`. Both are non-do-nothing actions and so
+        are counted here. That is deliberate: they are real interventions on the grid with
+        real operational cost, and excluding them would flatter an agent that churns the
+        topology while idle.
+
+        Because that choice is arguable, `n_actions_excl_recovery` is emitted alongside.
+        It requires a `recovery_action_fn` predicate to be supplied to the constructor --
+        classifying a recovery action needs the grid2op action space, which this module
+        deliberately does not depend on. Without it the column is NaN, never a wrong number.
+
+        NaN HANDLING
+        ------------
+        Steps whose reward is NaN are dropped from BOTH the reward sum and the action
+        count, so numerator and denominator always cover exactly the same steps. An episode
+        with zero actions yields NaN (not 0 and not a division error) -- "no interventions"
+        is undefined for a per-action average, not zero value per action.
+
+        Args:
+            actions (list): Actions taken in the episode, as vectors.
+            rewards (list): Per-step rewards for the same episode.
+            do_nothing_action (np.ndarray): The baseline 'do nothing' action.
+
+        Returns:
+            dict: n_actions, n_actions_excl_recovery, total_reward, ave_reward_per_action
+        """
+        if actions is None or rewards is None:
+            return {"n_actions": np.nan, "n_actions_excl_recovery": np.nan,
+                    "total_reward": np.nan, "ave_reward_per_action": np.nan}
+
+        # Identical NaN mask on numerator and denominator
+        n_steps = min(len(actions), len(rewards))
+        total_reward = 0.0
+        n_actions = 0
+        n_actions_excl_recovery = 0
+        for step in range(n_steps):
+            reward = rewards[step]
+            if isna(reward):
+                continue
+            total_reward += reward
+            act = actions[step]
+            if (act != do_nothing_action).any():
+                n_actions += 1
+                if self.recovery_action_fn is not None and not self.recovery_action_fn(act):
+                    n_actions_excl_recovery += 1
+
+        if n_actions == 0:
+            ave_reward_per_action = np.nan
+        else:
+            ave_reward_per_action = total_reward / n_actions
+
+        return {
+            "n_actions": n_actions,
+            "n_actions_excl_recovery": (n_actions_excl_recovery
+                                        if self.recovery_action_fn is not None else np.nan),
+            "total_reward": total_reward,
+            "ave_reward_per_action": ave_reward_per_action,
+        }
+
+    def aggregate_reward_per_action(self, metrics_robustness):
+        """
+        Pools KPI-RF-078 across episodes as sum(reward) / sum(actions).
+
+        Deliberately not a mean of the per-episode `reward_per_action_ratio` values:
+        episodes vary in length and in how often the gated agent fires, so a plain mean
+        would give a 10-step episode the same weight as a 1000-step one. Pooling the sums
+        weights each episode by how much evidence it actually contributes.
+
+        Args:
+            metrics_robustness (pd.DataFrame): Per-episode robustness metrics.
+
+        Returns:
+            pd.Series: pooled totals, both per-action averages, the ratio, the target
+                threshold and whether the ratio meets it.
+        """
+        total_reward = metrics_robustness["total_reward"].sum()
+        n_actions = metrics_robustness["n_actions"].sum()
+        n_actions_excl_recovery = metrics_robustness["n_actions_excl_recovery"].sum(min_count=1)
+        # Reconstruct the baseline reward total from its per-episode average and action
+        # count, so the pooled baseline is also sum(reward)/sum(actions).
+        base_reward_per_ep = (metrics_robustness["ave_reward_per_action_unperturbed"] *
+                              metrics_robustness["n_actions_unperturbed"])
+        total_reward_base = base_reward_per_ep.sum(min_count=1)
+        n_actions_base = metrics_robustness["n_actions_unperturbed"].sum(min_count=1)
+
+        ave = total_reward / n_actions if not isna(n_actions) and n_actions > 0 else np.nan
+        if isna(n_actions_base) or n_actions_base <= 0 or isna(total_reward_base):
+            ave_base = np.nan
+        else:
+            ave_base = total_reward_base / n_actions_base
+
+        if isna(ave) or isna(ave_base) or ave_base == 0:
+            ratio = np.nan
+        else:
+            ratio = ave / ave_base
+
+        return pd.Series({
+            "total_reward": total_reward,
+            "n_actions": n_actions,
+            "n_actions_excl_recovery": n_actions_excl_recovery,
+            "ave_reward_per_action": ave,
+            "n_actions_unperturbed": n_actions_base,
+            "ave_reward_per_action_unperturbed": ave_base,
+            "reward_per_action_ratio": ratio,
+            "target_ratio": REWARD_PER_ACTION_TARGET_RATIO,
+            "meets_target": (not isna(ratio)) and ratio >= REWARD_PER_ACTION_TARGET_RATIO,
+        })
 
     def get_robustness_metrics_single_ep(self, obs_unperturb, obs_perturb, actions_unperturbed, actions_perturbed, do_nothing_action):
         """

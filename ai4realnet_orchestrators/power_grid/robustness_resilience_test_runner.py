@@ -7,6 +7,9 @@ from typing import Dict, List
 import numpy as np
 from ai4realnet_orchestrators.power_grid.power_grid_test_runner import PowerGridTestRunner, FRAMEWORK_PATH
 
+# KPI-RF-078 target; defined next to the metric it belongs to.
+from evaluation_framework.metrics import REWARD_PER_ACTION_TARGET_RATIO
+
 logger = logging.getLogger(__name__)
 
 # KPI ID to metric mapping
@@ -57,6 +60,11 @@ ROBUSTNESS_RESILIENCE_KPI_MAPPING = {
         "name": "KPI-SF-077: Similarity to unperturbed state",
         "metric_key": "state_similarity",
         "description": "Cosine similarity to unperturbed states [-1 to 1]"
+    },
+    "95ba1e9a-8d72-4c0e-9526-7676f70ff067": {
+        "name": "KPI-RF-078: Reward per action",
+        "metric_key": "reward_per_action_ratio",
+        "description": "Perturbed reward-per-action as a fraction of the unperturbed baseline [0-1+]"
     },
 }
 
@@ -241,6 +249,7 @@ class RobustnessResilienceTestRunner(PowerGridTestRunner):
         vulnerability_scores = []
         steps_survived = []
         similarity_scores = []
+        reward_per_action_ratios = []
         reward_drops = []
         action_change_freqs = []
         areas_between_curves = []
@@ -286,6 +295,13 @@ class RobustnessResilienceTestRunner(PowerGridTestRunner):
             degradation_times.append(m.metrics_resilience['degradation_time'].values[0])
             restoration_times.append(m.metrics_resilience['restoration_time'].values[0])
             state_similarities.append(np.mean([np.mean(ep) for ep in m.cos_similarity_all]))
+
+            # KPI-RF-078: pooled within this attacker as sum(reward)/sum(actions),
+            # see metrics.aggregate_reward_per_action().
+            rpa_ratio = m.reward_per_action["reward_per_action_ratio"]
+            logger.info(f"    - Reward/Action Ratio:  {rpa_ratio:.4f} "
+                        f"(target >= {REWARD_PER_ACTION_TARGET_RATIO})")
+            reward_per_action_ratios.append(rpa_ratio)
         
         # Compute averages across all attackers
         aggregated = {
@@ -300,11 +316,29 @@ class RobustnessResilienceTestRunner(PowerGridTestRunner):
             'degradation_time': np.mean(degradation_times),
             'restoration_time': np.mean(restoration_times),
             'state_similarity': np.mean(state_similarities),
+
+            # KPI-RF-078. Mean across ATTACKERS, matching every other KPI here; the
+            # pooling that matters (sum(reward)/sum(actions)) already happened across
+            # episodes inside each attacker's metrics object. Attackers whose ratio is
+            # undefined (no actions taken at all) are skipped rather than poisoning it.
+            'reward_per_action_ratio': self._mean_defined(reward_per_action_ratios),
         }
         
         logger.info(f"Aggregated metrics: {aggregated}")
         
         return aggregated
+
+    @staticmethod
+    def _mean_defined(values):
+        """
+        Mean over the entries that are defined, ignoring NaN.
+
+        KPI-RF-078 is NaN for an attacker against which the agent never acted, and for
+        pickles written before the per-action columns existed. Averaging those in would
+        make the KPI NaN for every attacker.
+        """
+        defined = [float(v) for v in values if v is not None and np.isfinite(v)]
+        return float(np.mean(defined)) if defined else float("nan")
 
 
 class TestRunner_KPI_DF_069_Power_Grid(RobustnessResilienceTestRunner):
