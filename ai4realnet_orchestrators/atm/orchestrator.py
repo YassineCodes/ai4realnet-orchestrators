@@ -6,6 +6,9 @@ import ssl
 from celery import Celery
 
 from ai4realnet_orchestrators.atm.test_runner import BlueSkyRunner
+from ai4realnet_orchestrators.atm.test_runner_robustness_resilience_kpi_069_077 import (
+    ATMRobustnessTestRunner,
+)
 from ai4realnet_orchestrators.orchestrator import Orchestrator
 
 
@@ -187,52 +190,52 @@ bluesky_orchestrator = Orchestrator(
         ),
         
         # KPI-DF-069: Drop-off in reward (ATM)
-        "4819e8f6-a2d4-497f-9b61-fc90883a0dfb": BlueSkyRunner(
+        "4819e8f6-a2d4-497f-9b61-fc90883a0dfb": ATMRobustnessTestRunner(
             test_id="4819e8f6-a2d4-497f-9b61-fc90883a0dfb", scenario_ids=['532a18a1-5e58-45a4-830e-b5ca016499f9'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
         ),
         
         # KPI-FF-070: Frequency changed output AI agent (ATM)
-        "f0f94fb1-2aef-44f6-ba80-5b8320725fb0": BlueSkyRunner(
+        "f0f94fb1-2aef-44f6-ba80-5b8320725fb0": ATMRobustnessTestRunner(
             test_id="f0f94fb1-2aef-44f6-ba80-5b8320725fb0", scenario_ids=['12c63b69-e6b1-4316-999b-7112e0b0c1d2'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
         ),
         
         # KPI-SF-071: Severity of changed output AI agent (ATM)
-        "02bfbe09-6e9b-4243-a376-1a51b1beef19": BlueSkyRunner(
+        "02bfbe09-6e9b-4243-a376-1a51b1beef19": ATMRobustnessTestRunner(
             test_id="02bfbe09-6e9b-4243-a376-1a51b1beef19", scenario_ids=['af261375-7fd2-4a89-92b6-3477b018a09d'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
         ),
         
         # KPI-SF-072: Steps survived with perturbations (ATM)
-        "c466661d-12dc-4d1e-81a4-1db1623e3cc1": BlueSkyRunner(
+        "c466661d-12dc-4d1e-81a4-1db1623e3cc1": ATMRobustnessTestRunner(
             test_id="c466661d-12dc-4d1e-81a4-1db1623e3cc1", scenario_ids=['f903201d-a631-46c9-997f-f32bf7e3ff5d'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
         ),
         
         # KPI-VF-073: Vulnerability to perturbation (ATM)
-        "5cfc7e4d-024b-4dd1-82a5-c3d9bf25ba50": BlueSkyRunner(
+        "5cfc7e4d-024b-4dd1-82a5-c3d9bf25ba50": ATMRobustnessTestRunner(
             test_id="5cfc7e4d-024b-4dd1-82a5-c3d9bf25ba50", scenario_ids=['3ced691e-d23c-47de-9967-5cf5d7be3e9e'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
         ),
         
         # KPI-RF-078: Reward per action (ATM)
-        "885cab0d-d4fc-4d93-95db-243870506405": BlueSkyRunner(
+        "885cab0d-d4fc-4d93-95db-243870506405": ATMRobustnessTestRunner(
             test_id="885cab0d-d4fc-4d93-95db-243870506405", scenario_ids=['eeb9b483-616d-4508-85b8-812a09f93d23'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
         ),
         
         # KPI-AF-074: Area between reward curves (ATM)
-        "5372decd-6a2a-4c50-bf7a-cd57cfebe3de": BlueSkyRunner(
+        "5372decd-6a2a-4c50-bf7a-cd57cfebe3de": ATMRobustnessTestRunner(
             test_id="5372decd-6a2a-4c50-bf7a-cd57cfebe3de", scenario_ids=['e80a5e55-dc60-459f-bf22-26f196a4711a'], benchmark_id="31ea606b-681a-437a-85b9-7c81d4ccc287"
         ),
         
         # KPI-DF-075: Degradation time (ATM)
-        "2baef867-c1f2-4b6e-b13c-0eac9463c2fa": BlueSkyRunner(
+        "2baef867-c1f2-4b6e-b13c-0eac9463c2fa": ATMRobustnessTestRunner(
             test_id="2baef867-c1f2-4b6e-b13c-0eac9463c2fa", scenario_ids=['2aaed2a4-7dd9-4ea6-a2df-e3ef2207680a'], benchmark_id="31ea606b-681a-437a-85b9-7c81d4ccc287"
         ),
         
         # KPI-RF-076: Restorative time (ATM)
-        "7b15a7b3-2413-4953-b91a-24f5c0c5b6da": BlueSkyRunner(
+        "7b15a7b3-2413-4953-b91a-24f5c0c5b6da": ATMRobustnessTestRunner(
             test_id="7b15a7b3-2413-4953-b91a-24f5c0c5b6da", scenario_ids=['00e749d7-baa3-4b24-8092-d3dd69cdea58'], benchmark_id="31ea606b-681a-437a-85b9-7c81d4ccc287"
         ),
         
         # KPI-SF-077: Similarity state to unperturbed situation (ATM)
-        "e3fb76a2-2121-4889-adf2-b60ca29c5c71": BlueSkyRunner(
+        "e3fb76a2-2121-4889-adf2-b60ca29c5c71": ATMRobustnessTestRunner(
             test_id="e3fb76a2-2121-4889-adf2-b60ca29c5c71", scenario_ids=['afc812fc-e4f3-4380-a856-9987bc557d5c'], benchmark_id="31ea606b-681a-437a-85b9-7c81d4ccc287"
         ),
         
