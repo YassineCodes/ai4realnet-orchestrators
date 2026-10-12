@@ -23,15 +23,15 @@ values are the mean across attackers, as defined in
 
 | KPI | power_grid | railway | atm |
 |-----|-----------:|--------:|----:|
-| DF-069 Drop-off in reward | 0.0000 | 0.1612 | 0.1813 |
-| FF-070 Frequency changed output | 1.7773 | 0.3690 | 1.0000 |
-| SF-071 Severity of changed output | −0.4826 | 0.3392 | 0.0947 |
-| SF-072 Steps survived | 656.81 | 29.46 | 77.43 |
-| VF-073 Vulnerability to perturbation | 0.2244 | 0.0697 | 0.7609 |
-| AF-074 Area between curves | 0.0000 | 4232.07 | 4124.78 |
-| DF-075 Degradation time | 0.0000 | 3.25 | 27.32 |
-| RF-076 Restorative time | 0.0000 | 0.97 | 3.09 |
-| SF-077 Similarity to unperturbed state | 0.9923 | 0.9522 | 0.3773 |
+| DF-069 Drop-off in reward | 0.0000 | 0.1612 | 0.1881 |
+| FF-070 Frequency changed output | 1.7773 | 0.3690 | 0.9999 |
+| SF-071 Severity of changed output | −0.4826 | 0.3392 | 0.0926 |
+| SF-072 Steps survived | 656.81 | 29.46 | 77.58 |
+| VF-073 Vulnerability to perturbation | 0.2244 | 0.0697 | 0.7431 |
+| AF-074 Area between curves | 0.0000 | 4232.07 | 4101.35 |
+| DF-075 Degradation time | 0.0000 | 3.25 | 27.36 |
+| RF-076 Restorative time | 0.0000 | 0.97 | 3.01 |
+| SF-077 Similarity to unperturbed state | 0.9923 | 0.9522 | 0.3769 |
 | RF-078 Reward per action | — | 0.5372 | 0.9904 |
 
 ---
@@ -76,18 +76,26 @@ perturbation is recorded per run and matched the budget in every case.
 | Attacker | Vulnerability | Steps survived | Severity | Reward drop % | Action change freq | Area | Degradation | Restoration | State similarity | Reward/action |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | GEPerturb | 0.9994 | 68.8 | 0.2320 | 0.27 | 1.0000 | 706.83 | 23.5 | 2.9 | 0.3524 | 1.0000 |
-| LambdaPIR | 0.3768 | 83.7 | 0.0895 | 0.08 | 1.0000 | 4846.39 | 26.4 | 5.6 | 0.3890 | 1.0000 |
+| LambdaPIR | 0.2522 | 84.8 | 0.0748 | 0.13 | 0.9995 | 4682.44 | 26.6 | 5.0 | 0.3859 | 1.0000 |
 | Random | 1.0000 | 76.9 | 0.1126 | 0.12 | 1.0000 | 4749.55 | 31.7 | 2.2 | 0.3804 | 1.0000 |
 | PPO | 0.6216 | 77.0 | 0.0580 | 0.13 | 1.0000 | 6954.24 | 31.3 | 3.0 | 0.3545 | 0.9991 |
 | SAC_10 | 0.7787 | 82.0 | 0.0764 | 0.23 | 1.0000 | 5493.54 | 32.1 | 2.7 | 0.4147 | 0.9536 |
 | SAC_5 | 0.7585 | 76.8 | 0.0388 | 0.24 | 1.0000 | 2580.14 | 23.3 | 1.7 | 0.3761 | 1.0000 |
 | RLPerturb | 0.7911 | 76.6 | 0.0557 | 0.19 | 1.0000 | 3542.74 | 23.0 | 3.6 | 0.3742 | 0.9804 |
 
-Episode length per attacker, against the 4394-step baseline: GEPerturb 3442, RLPerturb 3832,
-SAC_5 3842, Random 3847, PPO 3849, SAC_10 4100, LambdaPIR 4187.
+LambdaPIR updates its action values by the same Bellman bootstrap as the power-grid and
+railway agents, `Q(s,a) <- (1-alpha) Q(s,a) + alpha [R(s,a) + gamma V(s')]` with gamma = 0.99;
+the other six attackers are unchanged and reproduce their earlier values exactly. Attacker
+phases share one environment instance, so a phase's values depend on the phases run before
+it: reproduce with the full seven-attacker list in the order above.
 
-`action_change_freq` is 1.0000 for every attacker: the action space is continuous
-(`Box(-1, 1, (2,))`), so any non-zero perturbation changes the action vector at every step.
+Episode length per attacker, against the 4394-step baseline: GEPerturb 3442, RLPerturb 3832,
+SAC_5 3842, Random 3847, PPO 3849, SAC_10 4100, LambdaPIR 4240.
+
+`action_change_freq` is 1.0000 for every attacker but LambdaPIR: the action space is
+continuous (`Box(-1, 1, (2,))`), so any non-zero perturbation changes the action vector at
+every step. LambdaPIR reads 0.9995 because its action space also contains an explicit no-op,
+which leaves the observation unchanged on the steps where it is selected.
 
 ---
 

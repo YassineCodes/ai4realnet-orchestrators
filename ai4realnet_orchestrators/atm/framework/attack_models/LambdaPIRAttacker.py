@@ -18,11 +18,11 @@ logger = logging.getLogger(__name__)
 class LambdaPIRAttacker(BaseAttackerClass):
     """Policy/value iteration over bounded single-feature perturbations."""
 
-    def __init__(self, obs_space=None, agent=None, xi=0.1, lambda_param=0.7, initial_prob_policy=0.2, gradient_step_size=0.1, refinement_iterations=20, decay_schedule="exponential", seed=2, model_name="LambdaPIR", pickle_file="lambdapir.pkl"):
+    def __init__(self, obs_space=None, agent=None, xi=0.1, lambda_param=0.7, initial_prob_policy=0.2, gradient_step_size=0.1, refinement_iterations=20, decay_schedule="exponential", gamma=0.99, seed=2, model_name="LambdaPIR", pickle_file="lambdapir.pkl"):
         super().__init__(name=model_name)
         self.model_name = model_name
         self.pickle_file = pickle_file
-        self.perturbation_agent = LambdaPIRPerturbationAgent(obs_space=obs_space, agent=agent, xi=xi, lambda_param=lambda_param, initial_prob_policy=initial_prob_policy, gradient_step_size=gradient_step_size, refinement_iterations=refinement_iterations, decay_schedule=decay_schedule, seed=seed)
+        self.perturbation_agent = LambdaPIRPerturbationAgent(obs_space=obs_space, agent=agent, xi=xi, lambda_param=lambda_param, initial_prob_policy=initial_prob_policy, gradient_step_size=gradient_step_size, refinement_iterations=refinement_iterations, decay_schedule=decay_schedule, gamma=gamma, seed=seed)
 
     def perturb(self, obs):
         return self.perturbation_agent.perturb(obs)

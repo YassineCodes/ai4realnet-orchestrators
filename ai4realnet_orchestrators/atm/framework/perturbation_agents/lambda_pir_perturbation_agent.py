@@ -7,6 +7,14 @@ _value_iteration_step / _evaluate_action / _apply_action / get_stats / reset) - 
 action space rebuilt over the BlueSky-Gym Dict observation instead of the grid2op vector,
 exactly as the railway domain rebuilt it over Flatland tree observations.
 
+The value update is the Bellman bootstrap the power-grid and railway agents use:
+
+    Q(s,a) <- (1-alpha) * Q(s,a) + alpha * [R(s,a) + gamma * V(s')]
+
+R(s,a) is the displacement the perturbation causes in the defender's action, and
+V(s') = max_a' score(s',a') over a sample of the action space. Only (a, R, s') are needed,
+so the previous observation is not retained.
+
 ONE DELIBERATE DIFFERENCE from the power-grid file, which the evaluation depends on:
 the perturbation is bounded by an explicit L-infinity budget xi. The power-grid agent
 writes a sentinel (999999 for "large", 0 for "missing") into the observation. Against an
@@ -42,6 +50,8 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
         xi: L-infinity budget per observation feature.
         lambda_param, initial_prob_policy, gradient_step_size, refinement_iterations,
         decay_schedule: as in the power-grid agent.
+        gamma: discount factor of the Bellman update, as in the power-grid and railway
+            agents. gradient_step_size is its learning rate alpha.
     """
 
     def __init__(self,
@@ -53,6 +63,7 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
                  gradient_step_size: float = 0.1,
                  refinement_iterations: int = 20,
                  decay_schedule: str = "exponential",
+                 gamma: float = 0.99,
                  name: str = "LambdaPIRPerturbationAgent",
                  seed: int = 2,
                  debug: bool = False):
@@ -67,6 +78,7 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
         self.gradient_step_size = float(gradient_step_size)
         self.refinement_iterations = int(refinement_iterations)
         self.decay_schedule = decay_schedule
+        self.gamma = float(gamma)
         self.debug = debug
 
         self._rng = np.random.default_rng(seed)
@@ -78,6 +90,10 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
         self.value_updates = 0
         self.action_history = []
         self._max_perturb = {}
+
+        # Previous transition, consumed by the Bellman update once s' is known.
+        self.prev_action_idx = None
+        self.prev_reward = None
 
     # ------------------------------------------------------------------
     # Action space
@@ -113,6 +129,10 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
         try:
             self._ensure_action_space_built(obs)
 
+            # s' for the previous transition is this step's observation.
+            if self.prev_action_idx is not None:
+                self._bellman_update(self.prev_action_idx, self.prev_reward, obs)
+
             prob_policy = self._get_probability_schedule(self.iteration_count)
             if self._rng.random() < prob_policy:
                 action_idx = self._policy_iteration_step(obs)
@@ -121,8 +141,8 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
                 action_idx = self._value_iteration_step(obs)
                 self.value_updates += 1
 
-            value = self._evaluate_action(obs, action_idx)
-            self._update_action_value(action_idx, value)
+            self.prev_action_idx = action_idx
+            self.prev_reward = self._evaluate_action(obs, action_idx)
 
             self.action_history.append(action_idx)
             self.iteration_count += 1
@@ -182,10 +202,26 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
             if m > self._max_perturb.get(key, 0.0):
                 self._max_perturb[key] = m
 
-    def _update_action_value(self, action_idx: int, value: float):
-        """Incremental update of the action value (power-grid agent's rule)."""
+    def _bellman_update(self, prev_action_idx: int, reward: float, current_obs):
+        """Q(s,a) <- (1-alpha)*Q(s,a) + alpha*[R(s,a) + gamma*V(s')]"""
+        target = reward + self.gamma * self._state_value(current_obs)
         a = self.gradient_step_size
-        self.action_values[action_idx] = (1 - a) * self.action_values[action_idx] + a * value
+        self.action_values[prev_action_idx] = (
+            (1 - a) * self.action_values[prev_action_idx] + a * target
+        )
+
+    def _state_value(self, obs) -> float:
+        """V(s) = max_a score(s,a) over a sample of the action space.
+
+        score() is the same combination the value-iteration step ranks candidates by, so
+        the bootstrap and the selection agree on what an action is worth.
+        """
+        n = len(self.possible_actions)
+        step = max(1, n // 10)
+        candidates = [0] + list(range(1, n, step))
+        return max(self._evaluate_action(obs, i)
+                   + self.lambda_param * self.action_values[i]
+                   for i in candidates if i < self.action_values.size)
 
     def _get_probability_schedule(self, iteration: int) -> float:
         if self.decay_schedule == "linear":
@@ -213,6 +249,8 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
             "current_prob_policy": self.current_prob_policy,
             "action_counts": counts,
             "mean_q_value": float(np.mean(self.action_values)) if self.action_values.size else 0.0,
+            "gamma": self.gamma,
+            "bellman_updates": True,
             "xi": self.xi,
             "max_perturb_per_key": dict(self._max_perturb),
         }
@@ -221,3 +259,5 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
         """Between episodes: drop the per-episode history, keep the learned values."""
         self.iteration_count = 0
         self.action_history = []
+        self.prev_action_idx = None
+        self.prev_reward = None
