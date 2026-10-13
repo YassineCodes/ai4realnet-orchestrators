@@ -26,7 +26,8 @@ from ai4realnet_orchestrators.power_grid.robustness_resilience_test_runner impor
     TestRunner_KPI_AF_074_Power_Grid,
     TestRunner_KPI_DF_075_Power_Grid,
     TestRunner_KPI_RF_076_Power_Grid,
-    TestRunner_KPI_SF_077_Power_Grid
+    TestRunner_KPI_SF_077_Power_Grid,
+    TestRunner_KPI_RF_078_Power_Grid,
 )
 
 from ai4realnet_orchestrators.power_grid.test_runner_kpi_rs_058_power_grid import TestRunner_KPI_RS_058_Power_Grid
@@ -265,10 +266,10 @@ power_grid_orchestrator = Orchestrator(
          test_id="b8a9a411-7cfe-4c1d-b9a6-eef1c0efe920", scenario_ids=['61063867-df62-4024-be42-c57507a15d7c'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
         ),
 
-        # # KPI-RF-078: Reward per action (Power Grid)
-        # "95ba1e9a-8d72-4c0e-9526-7676f70ff067": TestRunner_KPI_RF_078_Power_Grid(
-        #     test_id="95ba1e9a-8d72-4c0e-9526-7676f70ff067", scenario_ids=['a999eb93-2efe-4f73-a2d8-eab51f158ae8'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
-        # ),
+        # KPI-RF-078: Reward per action (Power Grid)
+        "95ba1e9a-8d72-4c0e-9526-7676f70ff067": TestRunner_KPI_RF_078_Power_Grid(
+            test_id="95ba1e9a-8d72-4c0e-9526-7676f70ff067", scenario_ids=['a999eb93-2efe-4f73-a2d8-eab51f158ae8'], benchmark_id="3810191b-8cfd-4b03-86b2-f7e530aab30d"
+        ),
         #
         # # KPI-EF-086: Explainability Robustness (Power Grid)
         # "89919375-8b53-4e3f-8382-a97e0af7eb56": TestRunner_KPI_EF_086_Power_Grid(
