@@ -51,42 +51,120 @@ Unlike the power grid domain, the railway attackers train from scratch during th
 
 ### Measured results
 
-> **SUPERSEDED — these numbers predate the attack decision/application fix and must be
-> re-run.** They were produced while `act_and_step()` made a second, independent attack
-> decision per step and discarded the attacker's chosen corruption type, and while the
-> recorded perturbation was the TreeObs delta rather than the delta applied to the
-> policy's own observation. `action_change_freq`, `reward_per_action_ratio`,
-> `degradation_time` and `area_between_curves` are measured from actions and rewards and
-> are affected only through the attackers' altered behaviour; `perturb_vulnerability` is
-> computed *from the perturbation vector itself* and was therefore correlating action
-> changes against a perturbation the policy never received — it is not interpretable for
-> this domain as published below.
-
-50 episodes against the bundled reference agent (`framework/agent.zip`). The unperturbed baseline delivers all three trains in 45 of 50 episodes, mean arrival 0.93.
+200 episodes against the bundled reference agent (`framework/agent.zip`), on the fixed
+pipeline. Every attacker is evaluated on the same scenarios (`env.reset(seed=ep)` for
+`ep` in `0..199`), so the rows are paired. The unperturbed baseline delivers all three
+trains in 168 of 200 episodes, mean arrival 0.875.
 
 | Attacker | `action_change_freq` | `perturb_vulnerability` | `reward_per_action_ratio` | `degradation_time` | `area_between_curves` |
 |----------|---------------------|-------------------------|---------------------------|--------------------|-----------------------|
-| LambdaPIR | 0.841 | 0.049 | 0.361 | 4.40 | 5091 |
-| SAC | 0.339 | 0.036 | 0.557 | 3.88 | 4378 |
-| RLPerturb | 0.336 | 0.122 | 0.597 | 2.82 | 4303 |
-| Random | 0.275 | 0.156 | 0.446 | 3.34 | 4845 |
-| PPO | 0.233 | 0.042 | 0.663 | 3.08 | 4049 |
-| GEPerturb | 0.070 | 0.056 | 0.860 | 1.50 | 2363 |
+| Random | 0.339 | 0.304 | 0.433 | 3.82 | 5148 |
+| GEPerturb | 0.332 | 0.296 | 0.496 | 3.81 | 5070 |
+| RLPerturb | 0.187 | 0.213 | 0.755 | 3.00 | 3593 |
+| PPO | 0.135 | 0.078 | 0.842 | 1.08 | 1533 |
+| SAC | 0.048 | 0.013 | 0.938 | 0.34 | 460 |
+| LambdaPIR | 0.008 | 0.005 | 0.974 | 0.41 | 496 |
+
+Operational effect of the same runs, the fraction of trains that actually arrived:
+
+| Attacker | mean arrival | change vs unperturbed | all-3-trains episodes | trains attacked per perturbed step | mean abs applied delta |
+|----------|--------------|-----------------------|-----------------------|------------------------------------|------------------------|
+| Random | 0.467 | -0.408 | 38/200 | 1.15 | 3.86 |
+| GEPerturb | 0.498 | -0.377 | 41/200 | 1.00 | 3.85 |
+| RLPerturb | 0.730 | -0.145 | 96/200 | 1.00 | 7.19 |
+| PPO | 0.787 | -0.088 | 126/200 | 1.00 | 8.31 |
+| SAC | 0.852 | -0.023 | 157/200 | 1.00 | 7.34 |
+| LambdaPIR | 0.855 | -0.020 | 161/200 | 1.00 | 7.88 |
+| *unperturbed* | 0.875 | n/a | 168/200 | n/a | n/a |
 
 Aggregated across all six attackers:
 
 | KPI | Value |
 |-----|-------|
-| `perturb_vulnerability` | 0.0770 |
-| `n_steps_survived` | 28.93 |
-| `severity_of_change` | 0.3392 |
-| `reward_drop_percent` | 0.1469 |
-| `action_change_freq` | 0.3489 |
-| `area_between_curves` | 4171.53 |
-| `degradation_time` | 3.17 |
-| `restoration_time` | 0.9733 |
-| `state_similarity` | 0.9539 |
-| `reward_per_action_ratio` | 0.5808 |
+| `perturb_vulnerability` | 0.1516 |
+| `n_steps_survived` | 27.8775 |
+| `severity_of_change` | 0.3383 |
+| `reward_drop_percent` | 0.2118 |
+| `action_change_freq` | 0.1748 |
+| `area_between_curves` | 2716.8298 |
+| `degradation_time` | 2.0758 |
+| `restoration_time` | 0.6108 |
+| `state_similarity` | 0.9721 |
+| `reward_per_action_ratio` | 0.7397 |
+
+#### What the fix changed, and the result it produced
+
+The 50-episode table below is kept for comparison only. It was produced while
+`act_and_step()` made a second, independent attack decision per step, discarded the
+attacker's chosen corruption type, applied the attack to every train whenever the
+attacker published no target, and recorded the TreeObs delta instead of the delta
+applied to the policy's own observation.
+
+| Attacker | `action_change_freq` (50 ep, pre-fix) | `action_change_freq` (200 ep, fixed) |
+|----------|---------------------------------------|--------------------------------------|
+| LambdaPIR | 0.841 | 0.008 |
+| SAC | 0.339 | 0.048 |
+| RLPerturb | 0.336 | 0.187 |
+| Random | 0.275 | 0.339 |
+| PPO | 0.233 | 0.135 |
+| GEPerturb | 0.070 | 0.332 |
+
+The ordering inverts. Pre-fix, LambdaPIR led by 2.5x over the random baseline; on the
+fixed pipeline it is the weakest of the six, and **every learned attacker scores below
+the random baseline**. Paired per-episode Wilcoxon signed-rank against Random over the
+same 200 seeds: LambdaPIR z = -12.26, p = 1.4e-34; SAC z = -11.36, p = 6.3e-30;
+PPO z = -9.87, p = 5.8e-23; RLPerturb z = -10.06, p = 8.2e-24. GEPerturb is the only
+attacker statistically indistinguishable from Random (z = -1.02, p = 0.31) — consistent
+with its candidate scoring being degenerate, since it selects `blank` on every step and
+`blank` is also what the random baseline applies.
+
+Breadth is now matched, which it was not before: Random attacks 1.15 trains per
+perturbed step against 1.00 for every targeted attacker, and all six perturb a similar
+share of steps (47-54%). The pre-fix random baseline was applied to all three trains on
+every step, so its old 0.275 was earned with roughly 3x the breadth of any
+targeted attacker.
+
+Two independent measurements agree on the ordering, so this is not an artifact of one
+metric: `action_change_freq` and the drop in trains delivered rank the six attackers
+identically (Spearman +1.000, Pearson +0.977).
+
+#### The attacker objective is anti-correlated with harm
+
+The fixed run makes the reward-function problem measurable rather than arguable.
+`disruption_reward()` scores distortion of the TreeObs, and the attackers that maximise
+it succeed at exactly that and at nothing else:
+
+- LambdaPIR produces the **largest** applied perturbation of all six (mean absolute
+  delta 7.88) and the **smallest** behavioural effect (0.008 action changes, -0.020
+  arrival).
+- Random produces one of the smallest perturbations (3.86) and by far the largest effect
+  (0.339, -0.408 arrival, all three trains delivered in 38 of 200 episodes against 168
+  unperturbed).
+- Across the six attackers, perturbation magnitude is **negatively** rank-correlated
+  with operational harm (Spearman -0.771).
+
+The mechanism: the learned attackers scale or negate fields (`speed`, `direction`), which
+moves the observation far in L2 but in directions the behaviour-cloned policy is
+insensitive to. Blanking a field that the policy depends on is small in L2 and
+behaviourally decisive. Optimising TreeObs distortion therefore selects against
+effectiveness, which is why a random baseline beats every learned attacker here.
+
+This is a result about the objective, not about the domain: it motivates rewarding the
+attacker on the defender's own outcome. The counterfactual clean action is already
+computed every step (`act_and_step` returns it), so that signal is available at no extra
+cost. Replacing the reward changes what LambdaPIR *is* and breaks comparability with the
+submitted Smart Grid work, so it belongs in an additional attacker variant rather than in
+LambdaPIR itself.
+
+#### Known limitation of the recorded observation
+
+`perturbations` now records the delta applied to the maze observation the policy reads
+(258 values, 86 per train). `observations` still records the flattened TreeObs (144
+values, 48 per train) — a representation the BC policy never consumes. So
+`perturb_vulnerability` (KPI-VF-073) is computed on what the policy received, but
+`state_similarity` (KPI-SF-077) and the per-episode cosine-similarity curves are still
+computed on the TreeObs. Those two are a residual instance of the representation mismatch
+and should not be read as "how far the policy's input moved".
 
 ### When a robustness score is not a robustness score
 
