@@ -41,12 +41,12 @@ from perturbation_agents.utils import (
     flatten_obs_dict,
     corrupt_obs_dict,
     disruption_reward,
-    CORRUPTION_TYPES,
 )
+
+from perturbation_agents.attack_space import attack_actions, n_attack_actions
 
 logger = logging.getLogger(__name__)
 
-_N_CORRUPTION_TYPES = len(CORRUPTION_TYPES)  # 6
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ class RLPerturbationAgent(BasePerturbationAgent):
 
         self.n_agents = n_agents
         self.obs_dim = obs_dim
-        self.action_dim = n_agents * _N_CORRUPTION_TYPES
+        self.action_dim = n_attack_actions(n_agents)
         self.epsilon = epsilon
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
@@ -131,12 +131,8 @@ class RLPerturbationAgent(BasePerturbationAgent):
         if obs_dim > 0 and _TORCH_AVAILABLE:
             self._build_networks(obs_dim, lr)
 
-        # Decode action index → (handle, corruption_type)
-        self._action_map = [
-            (h, CORRUPTION_TYPES[c])
-            for h in range(n_agents)
-            for c in range(_N_CORRUPTION_TYPES)
-        ]
+        # Decode action index → (handle, corruption_type, severity)
+        self._action_map = attack_actions(n_agents)
 
         # State for train_step
         self._prev_state: Optional[np.ndarray] = None
@@ -162,10 +158,11 @@ class RLPerturbationAgent(BasePerturbationAgent):
                 state = state[:self.obs_dim]
 
         action_idx = self._select_action(state)
-        handle, ctype = self._action_map[action_idx]
+        handle, ctype, severity = self._action_map[action_idx]
         self.last_handle = handle
         self.last_ctype = ctype
-        perturbed = corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype)
+        self.last_severity = severity
+        perturbed = corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype, severity)
 
         # Compute reward and store transition (no next_state yet — deferred)
         reward = disruption_reward(obs_dict, perturbed)

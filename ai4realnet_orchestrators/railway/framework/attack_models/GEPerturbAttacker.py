@@ -24,14 +24,16 @@ class GEPerturbAttacker(BaseAttackerClass):
     Args:
         defender: A RailwayDefender that uses observations (ObsPolicyDefender).
         n_agents (int): Number of agents in the environment.
-        n_candidates (int): Number of (agent, corruption) pairs to evaluate per step.
+        n_candidates (int or None): Number of actions to evaluate per step. None
+                            keeps the coverage this attacker had before the action
+                            space gained a severity axis; see the agent docstring.
         seed (int): Random seed.
     """
 
     model_name = "GEPerturbAttacker"
     pickle_file = "ge_perturb_attacker.pkl"
 
-    def __init__(self, defender, n_agents, n_candidates=8, seed=42):
+    def __init__(self, defender, n_agents, n_candidates=None, seed=42):
         self.n_agents = n_agents
         self.model = GradientEstimationPerturbationAgent(
             defender=defender,
@@ -48,5 +50,7 @@ class GEPerturbAttacker(BaseAttackerClass):
         obs_t = copy.deepcopy(obs_dict)
         result = self.model.perturb(obs_t)
         handle, ctype = self.model.last_handle, self.model.last_ctype
-        self._publish_targets({handle: ctype} if handle is not None and ctype else {})
+        severity = getattr(self.model, "last_severity", 1.0)
+        self._publish_targets({handle: ctype} if handle is not None and ctype else {},
+                              {handle: severity} if handle is not None and ctype else {})
         return result

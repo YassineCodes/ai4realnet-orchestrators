@@ -26,8 +26,9 @@ from perturbation_agents.utils import (
     corrupt_obs_dict,
     corrupt_node,
     disruption_reward,
-    CORRUPTION_TYPES,
 )
+
+from perturbation_agents.attack_space import attack_actions
 
 logger = logging.getLogger(__name__)
 
@@ -80,11 +81,12 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
         self.decay_schedule = decay_schedule
         self.gamma = gamma
 
-        # Build action space: (do_nothing) + (handle × corruption_type)
-        self.possible_actions: List[Tuple] = [("do_nothing", None, None)]
-        for handle in range(n_agents):
-            for ctype in CORRUPTION_TYPES:
-                self.possible_actions.append(("corrupt", handle, ctype))
+        # Build action space: (do_nothing) + (handle × corruption_type × severity)
+        self.possible_actions: List[Tuple] = [("do_nothing", None, None, 1.0)]
+        self.possible_actions.extend(
+            ("corrupt", handle, ctype, severity)
+            for handle, ctype, severity in attack_actions(n_agents)
+        )
 
         self.action_values = np.zeros(len(self.possible_actions))
 
@@ -123,9 +125,10 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
 
             # Apply action
             obs_perturbed = self._apply_action(obs_dict, action_idx)
-            _atype, _h, _c = self.possible_actions[action_idx]
+            _atype, _h, _c, _s = self.possible_actions[action_idx]
             self.last_handle = _h
             self.last_ctype = _c
+            self.last_severity = _s
 
             # Immediate reward
             reward = disruption_reward(obs_dict, obs_perturbed)
@@ -192,7 +195,7 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
 
     def _heuristic_value(self, obs_dict: Dict, action_idx: int) -> float:
         """Domain heuristic bonus for an action."""
-        action_type, handle, ctype = self.possible_actions[action_idx]
+        action_type, handle, ctype, _severity = self.possible_actions[action_idx]
         if action_type == "do_nothing":
             return -10.0  # discourage doing nothing
         if handle is None or handle not in obs_dict:
@@ -245,10 +248,10 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
 
     def _apply_action(self, obs_dict: Dict, action_idx: int) -> Dict:
         """Apply the selected action to the observation dict."""
-        action_type, handle, ctype = self.possible_actions[action_idx]
+        action_type, handle, ctype, severity = self.possible_actions[action_idx]
         if action_type == "do_nothing":
             return copy.deepcopy(obs_dict)
-        return corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype)
+        return corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype, severity)
 
     def _probability_schedule(self, iteration: int) -> float:
         if self.decay_schedule == "linear":

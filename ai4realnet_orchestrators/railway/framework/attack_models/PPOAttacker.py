@@ -32,11 +32,11 @@ from perturbation_agents.utils import (
     flatten_obs_dict,
     corrupt_obs_dict,
     disruption_reward,
-    CORRUPTION_TYPES,
 )
 
+from perturbation_agents.attack_space import attack_actions, n_attack_actions
+
 logger = logging.getLogger(__name__)
-_N_CORRUPTION_TYPES = len(CORRUPTION_TYPES)
 
 
 class _ActorCriticNet(nn.Module if _TORCH_AVAILABLE else object):
@@ -85,7 +85,7 @@ class PPOAttacker(BaseAttackerClass):
         super().__init__(name=model_name)
         self.n_agents = n_agents
         self.obs_dim = obs_dim
-        self.action_dim = n_agents * _N_CORRUPTION_TYPES
+        self.action_dim = n_attack_actions(n_agents)
         self.lr = lr
         self.gamma = gamma
         self.entropy_coef = entropy_coef
@@ -103,11 +103,7 @@ class PPOAttacker(BaseAttackerClass):
         self.perturbation_count = 0
         self.space_prng = np.random.RandomState(seed)
 
-        self._action_map = [
-            (h, CORRUPTION_TYPES[c])
-            for h in range(n_agents)
-            for c in range(_N_CORRUPTION_TYPES)
-        ]
+        self._action_map = attack_actions(n_agents)
 
         if obs_dim > 0 and _TORCH_AVAILABLE:
             self._build_network(obs_dim)
@@ -130,9 +126,9 @@ class PPOAttacker(BaseAttackerClass):
                 state = state[:self.obs_dim]
 
         action_idx = self._select_action(state)
-        handle, ctype = self._action_map[action_idx]
-        self._publish_targets({handle: ctype})
-        perturbed = corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype)
+        handle, ctype, severity = self._action_map[action_idx]
+        self._publish_targets({handle: ctype}, {handle: severity})
+        perturbed = corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype, severity)
         reward = disruption_reward(obs_dict, perturbed)
 
         self._states.append(state)

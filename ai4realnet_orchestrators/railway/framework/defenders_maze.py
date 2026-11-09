@@ -219,7 +219,7 @@ class MazeFlatlandDefender(RailwayDefender):
     """
 
     def __init__(self, maze_env, policy, n_trains: int = 3,
-                 attack_mode: str = "obs_perturb"):
+                 attack_mode: str = "obs_perturb", xi: Optional[float] = None):
         self._maze_env = maze_env
         self._policy = policy
         self._n_trains = n_trains
@@ -243,6 +243,16 @@ class MazeFlatlandDefender(RailwayDefender):
         self._cached_clean_actions: Optional[dict] = None
         # active attacker registered by Environment.reset() via set_attacker()
         self._attacker = None
+        # Perturbation budget: each observation element may move by at most xi times its
+        # own clean magnitude. None leaves the attacker unbounded, which is how every
+        # railway result so far was produced; the power-grid domain bounds its attacker
+        # at epsilon=0.1, so a cross-domain comparison needs this set here too. See
+        # utils.clip_to_budget for why the bound is relative and not absolute.
+        self._xi = xi
+        # {observation key: (low, high)} read from the env own declared space, so the
+        # corruption cannot write a value the space could not hold. Read lazily: the
+        # space is only fully defined once the env has produced a state.
+        self._obs_bounds = None
 
     def set_attacker(self, attacker) -> None:
         """Register the active attacker so act() injects perturbations into maze obs."""
@@ -269,11 +279,32 @@ class MazeFlatlandDefender(RailwayDefender):
 
     _MASK_KEY = "train_move_mask"
 
+    def _bound_for(self, key):
+        """
+        (low, high) the env declares for this observation key, or None if unavailable.
+
+        Taken from the env own observation space rather than from a map size written
+        down here, so a differently sized scenario is bounded correctly without change.
+        """
+        if self._obs_bounds is None:
+            bounds = {}
+            space = getattr(self._maze_env, "observation_space", None)
+            for name, sub in (getattr(space, "spaces", None) or {}).items():
+                low, high = getattr(sub, "low", None), getattr(sub, "high", None)
+                if low is None or high is None:
+                    continue
+                try:
+                    bounds[name] = (float(np.min(low)), float(np.max(high)))
+                except (TypeError, ValueError):
+                    continue
+            self._obs_bounds = bounds
+        return self._obs_bounds.get(key)
+
     def _perturbable_keys(self, obs: dict):
         """Keys of obs that carry perturbable numbers, in a deterministic order."""
         return [k for k in sorted(obs) if k != self._MASK_KEY]
 
-    def _apply_vector_attack(self, obs: dict, ctype: str):
+    def _apply_vector_attack(self, obs: dict, ctype: str, severity: float = 1.0):
         """
         Apply the attacker's already-chosen corruption to the maze observation.
 
@@ -290,6 +321,9 @@ class MazeFlatlandDefender(RailwayDefender):
         Args:
             obs: the clean maze observation for the current actor.
             ctype: corruption type published by the attacker for this handle.
+            severity: how far past the plausible value the attacker chose to push the
+                claim. 1.0 is the plausible value, which is what a two-factor attacker
+                always played.
 
         Returns:
             tuple: (perturbed_obs, delta) where delta is the flat
@@ -301,7 +335,7 @@ class MazeFlatlandDefender(RailwayDefender):
                 observation unchanged would report the agent as robust to an attack
                 that was never applied.
         """
-        from perturbation_agents.utils import corrupt_vector
+        from perturbation_agents.utils import clip_to_budget, corrupt_vector
         perturbed = {}
         deltas = {}
         for key, val in obs.items():
@@ -310,12 +344,18 @@ class MazeFlatlandDefender(RailwayDefender):
                 perturbed[key] = val
                 continue
             flat = arr.flatten().astype(np.float64)
+            bound = self._bound_for(key)
             if self._attacker is not None and hasattr(self._attacker, "perturb_vector"):
-                out = np.asarray(self._attacker.perturb_vector(flat, ctype), dtype=np.float64)
+                out = np.asarray(
+                    self._call_perturb_vector(flat, ctype, severity, bound),
+                    dtype=np.float64)
             else:
-                out = corrupt_vector(flat, ctype)
-            deltas[key] = out - flat
-            perturbed[key] = restore(out)
+                out = corrupt_vector(flat, ctype, severity=severity, bound=bound)
+            # The budget is enforced on the delta, and the observation rebuilt from the
+            # clipped delta, so the perturbation recorded is the one the policy received.
+            delta = clip_to_budget(out - flat, flat, self._xi)
+            deltas[key] = delta
+            perturbed[key] = restore(flat + delta)
         if not deltas:
             raise RuntimeError(
                 "MazeFlatlandDefender: no maze observation entry could be perturbed "
@@ -324,6 +364,27 @@ class MazeFlatlandDefender(RailwayDefender):
             )
         delta = np.concatenate([deltas[k] for k in self._perturbable_keys(obs) if k in deltas])
         return perturbed, delta
+
+    def _call_perturb_vector(self, flat, ctype, severity, bound):
+        """
+        Call the attacker perturb_vector, passing severity and bound when it takes them.
+
+        An attacker written against the two-factor signature perturb_vector(vec, ctype)
+        still works: it is called that way and plays the plausible value, rather than
+        raising a TypeError that would be caught somewhere as "no attack applied".
+        """
+        import inspect
+        fn = self._attacker.perturb_vector
+        try:
+            params = inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            return fn(flat, ctype)
+        kwargs = {}
+        if "severity" in params:
+            kwargs["severity"] = severity
+        if "bound" in params:
+            kwargs["bound"] = bound
+        return fn(flat, ctype, **kwargs)
 
     def _get_rail_env(self):
         """Traverse the maze wrapper chain to reach the underlying RailEnv."""
@@ -469,6 +530,9 @@ class MazeFlatlandDefender(RailwayDefender):
 
         attacker_active = self._attacker is not None
         published = getattr(self._attacker, "last_targets", None) if attacker_active else None
+        published_severities = (
+            getattr(self._attacker, "last_severities", None) if attacker_active else None
+        ) or {}
         if published is not None:
             # A published decision is authoritative, including the empty one: an
             # attacker whose roll corrupted nothing this step must corrupt nothing
@@ -535,7 +599,8 @@ class MazeFlatlandDefender(RailwayDefender):
                 else:
                     ctype = None
                 if ctype is not None:
-                    policy_obs, delta = self._apply_vector_attack(obs, ctype)
+                    severity = float(published_severities.get(handle, 1.0))
+                    policy_obs, delta = self._apply_vector_attack(obs, ctype, severity)
                     if handle is not None:
                         applied_deltas[handle] = delta
                 else:

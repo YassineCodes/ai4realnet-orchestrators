@@ -301,6 +301,94 @@ p = 0.064).
 > The 200-episode table above predates this change: it was measured with the whole-vector
 > corruption, so the three inert corruption types were still inert in it.
 
+### The attackers can now choose how extreme the lie is
+
+An attack action was (which train) x (which corruption type): 18 actions for three
+trains. The field sweep above shows that space does not contain the attack that works.
+A corruption confined to the fields its type is about does almost nothing while the
+value it writes stays inside the range the simulator produces, and only becomes
+effective well outside it, so the one effective dimension was not expressible and every
+attacker was searching without it.
+
+`perturbation_agents/attack_space.py` adds severity as a third factor, and is the single
+place the action space is enumerated -- the five attackers each built the product
+themselves, which is how they could drift apart. An action is now
+`(handle, corruption_type, severity)`:
+
+| | two-factor | three-factor |
+|-|------------|--------------|
+| actions, 3 trains | 18 | 63 |
+| severities per type | 1 (the plausible value) | 4 (1, 10, 100, 1000) |
+
+Severity scales the deviation from the clean value,
+`written = clean + severity * (plausible - clean)`, so **severity 1.0 reproduces exactly
+the old action space** and every earlier result is the severity-1.0 slice of this one.
+Higher severities push the same claim past what the simulator could produce, up to the
+observation space's own declared bound -- read from the env at runtime
+(`Box(low=-1, high=prod(map_size))`, so 1369 on this 37x37 scenario) rather than written
+down here, so a differently sized scenario is bounded correctly without a code change.
+`blank` takes no severity: it is defined on the whole vector, and duplicate arms would
+only cost a learner samples.
+
+Measured against the reference BC policy, one train attacked per step to match the
+1.00-1.15 trains per perturbed step the real attackers were measured at (12 episodes per
+cell; arrival 0.972 unperturbed, 0.639 for the blank attack the random baseline plays):
+
+| corruption type | severity 1 | 10 | 100 | 1000 |
+|-----------------|-----------|----|-----|------|
+| `conflict` | 0.972 | 0.972 | 0.722 | 0.639 |
+| `target` | 0.750 | **0.611** | **0.611** | **0.611** |
+| `speed` | 0.972 | 0.972 | 0.972 | 0.972 |
+| `direction` | 0.972 | 0.944 | 0.639 | 0.639 |
+| `malfunction` | 0.972 | 0.722 | 0.694 | **0.611** |
+
+(arrival rate; lower is a stronger attack.)
+
+Three things to read from it. The severity-1 column is everything the old action space
+could play, and one cell of it does anything at all. Severity is monotone within every
+type, so it is a dimension a learner can follow rather than a lottery. And `train_speed`
+is flat at every severity, consistent with it holding exactly one distinct value in a
+clean rollout: it is unattackable by construction, not under-attacked.
+
+At 100 episodes the margin over the baseline replicates and grows, but the paired
+significance test has not been run:
+
+| | arrival | action change |
+|-|---------|---------------|
+| unperturbed | 0.9033 | 0.0000 |
+| `blank` (the random baseline's attack) | 0.6300 | 0.2606 |
+| `target` @ severity 10 | **0.5933** | 0.1256 |
+
+> Provisional. That run was stopped partway (2 of 5 configurations) and recorded only
+> the means, so there is no per-episode paired comparison and no p-value behind the
+> 0.037 difference. A severity attack beating the baseline is not established until the
+> paired test over identical seeds is run.
+
+Two things this does not yet show. The learning attackers have not been retrained on the
+larger space, so their reported numbers are still from the two-factor space and say
+nothing about whether they can find the severity axis. And the random baseline still
+plays only the plausible value, so it is the same bar as the 200-episode table above but
+it is not a matched-space control: "a learned attacker beats random" needs a baseline
+that samples severity too, or the comparison rewards having a bigger action space rather
+than using it.
+
+### A perturbation budget, so the number is comparable across domains
+
+The power-grid domain bounds its attacker -- `SACAdversarialContinuous` clips the
+perturbation to +/- epsilon, 0.1 by default -- and railway did not, so a railway
+robustness number was not comparable with a bounded one, and the attacks that work here
+are ones no bounded attacker could play. `MazeFlatlandDefender(..., xi=...)` applies a
+budget, and `utils.clip_to_budget` enforces it on the delta, with the observation rebuilt
+from the clipped delta so the perturbation recorded is the one the policy received.
+
+The bound is relative, not absolute, because these observations are not normalised:
+fields run from a -1 "absent" sentinel to distances in the tens, so a single absolute
+epsilon would be most of a flag's range and a rounding error on a distance. Each element
+may move by `xi` times its own clean magnitude, with a floor of 1.0 so a field reading
+exactly 0 can still be perturbed by `xi`. `xi=None` is the default and leaves the
+attacker unbounded, which is how every railway result in this file was produced; no
+bounded railway KPI has been measured yet.
+
 ### When a robustness score is not a robustness score
 
 Only agents that derive their actions from the observation can be scored meaningfully.

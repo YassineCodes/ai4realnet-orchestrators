@@ -36,6 +36,9 @@ class BasePerturbationAgent(ABC):
         self.config = kwargs
         self.last_handle = None
         self.last_ctype = None
+        # How far past the plausible value the chosen claim is pushed; 1.0 is the
+        # plausible value itself. See perturbation_agents.attack_space.
+        self.last_severity = 1.0
         logger.debug(f"Initialized {self.name}")
 
     @abstractmethod
@@ -57,6 +60,7 @@ class BasePerturbationAgent(ABC):
         self.reset_count += 1
         self.last_handle = None
         self.last_ctype = None
+        self.last_severity = 1.0
         logger.debug(f"{self.name}: reset #{self.reset_count}")
 
     def seed(self, seed: int) -> None:

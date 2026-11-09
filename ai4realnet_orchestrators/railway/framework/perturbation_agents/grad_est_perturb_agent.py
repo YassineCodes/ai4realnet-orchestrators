@@ -18,12 +18,13 @@ Key differences from power grid:
 
 import copy
 import logging
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 
 from perturbation_agents.base_perturb_agent import BasePerturbationAgent
-from perturbation_agents.utils import flatten_obs_dict, corrupt_obs_dict, CORRUPTION_TYPES
+from perturbation_agents.utils import flatten_obs_dict, corrupt_obs_dict
+from perturbation_agents.attack_space import attack_actions
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +43,13 @@ class GradientEstimationPerturbationAgent(BasePerturbationAgent):
     Args:
         defender: A RailwayDefender instance (must use observations — ObsPolicyDefender).
         n_agents (int): Number of agents in the environment.
-        n_candidates (int): How many (agent, corruption) pairs to evaluate per step.
-                            Larger = better quality but slower. Default 8.
+        n_candidates (int or None): How many actions to evaluate per step. Larger =
+                            better quality but slower, since each candidate costs one
+                            defender query. None keeps the coverage this agent had
+                            before severity existed: it evaluated 8 of the 18 actions
+                            in the two-factor space, so the default is half the action
+                            space rather than a fixed 8, which in the three-factor
+                            space would have silently dropped it to 13%.
         seed (int): Random seed.
     """
 
@@ -51,19 +57,18 @@ class GradientEstimationPerturbationAgent(BasePerturbationAgent):
         self,
         defender,
         n_agents: int,
-        n_candidates: int = 8,
+        n_candidates: Optional[int] = None,
         seed: int = 42,
     ):
         super().__init__(name="GradientEstimationPerturbationAgent", seed=seed)
         self.defender = defender
         self.n_agents = n_agents
-        self.n_candidates = n_candidates
 
         # Build full action space
-        self._actions = []
-        for handle in range(n_agents):
-            for ctype in CORRUPTION_TYPES:
-                self._actions.append((handle, ctype))
+        self._actions = attack_actions(n_agents)
+        self.n_candidates = (
+            max(8, len(self._actions) // 2) if n_candidates is None else n_candidates
+        )
 
     def perturb(self, obs_dict: Dict) -> Dict:
         """
@@ -91,8 +96,9 @@ class GradientEstimationPerturbationAgent(BasePerturbationAgent):
         best_action = None
 
         for idx in indices:
-            handle, ctype = self._actions[idx]
-            candidate_obs = corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype)
+            handle, ctype, severity = self._actions[idx]
+            candidate_obs = corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype,
+                                             severity)
 
             try:
                 perturbed_actions = self.defender.act(candidate_obs)
@@ -106,17 +112,18 @@ class GradientEstimationPerturbationAgent(BasePerturbationAgent):
 
             if score > best_score:
                 best_score = score
-                best_action = (handle, ctype)
+                best_action = (handle, ctype, severity)
 
         if best_action is None or best_score == 0:
             # No action caused any change — fall back to random blank
             handle = int(self.space_prng.randint(self.n_agents))
-            best_action = (handle, "blank")
+            best_action = (handle, "blank", 1.0)
 
-        handle, ctype = best_action
+        handle, ctype, severity = best_action
         self.last_handle = handle
         self.last_ctype = ctype
-        result = corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype)
+        self.last_severity = severity
+        result = corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype, severity)
         self.perturbation_count += 1
         return result
 

@@ -69,7 +69,9 @@ class RLPerturbAttacker(BaseAttackerClass):
         obs_t = copy.deepcopy(obs_dict)
         result = self.model.perturb(obs_t)
         handle, ctype = self.model.last_handle, self.model.last_ctype
-        self._publish_targets({handle: ctype} if handle is not None and ctype else {})
+        severity = getattr(self.model, "last_severity", 1.0)
+        self._publish_targets({handle: ctype} if handle is not None and ctype else {},
+                              {handle: severity} if handle is not None and ctype else {})
         return result
 
     def reset(self):

@@ -74,7 +74,7 @@ def flatten_obs_dict(obs_dict):
     return np.concatenate(parts)
 
 
-def corrupt_node(node, corruption_type):
+def corrupt_node(node, corruption_type, severity=1.0):
     """
     Return a new Node (via _replace) with a specific adversarial corruption applied.
 
@@ -85,6 +85,11 @@ def corrupt_node(node, corruption_type):
         "speed"       - speed_min_fractional → 0 (phantom blockage)
         "direction"   - num_agents_opposite_direction → 100 (phantom head-ons)
         "malfunction" - num_agents_malfunctioning → 100 (phantom failures)
+
+    severity scales how far past the plausible value the claim is pushed:
+    `written = clean + severity * (plausible - clean)`, so 1.0 writes exactly the value
+    above and larger values leave the range the simulator can produce. See
+    perturbation_agents.attack_space for why that axis exists. "blank" ignores it.
     """
     if node is None:
         return node
@@ -101,16 +106,25 @@ def corrupt_node(node, corruption_type):
         "direction":   {"num_agents_opposite_direction": 100.0},
         "malfunction": {"num_agents_malfunctioning": 100.0},
     }
-    if corruption_type in mapping:
-        return node._replace(**mapping[corruption_type])
-    return node
+    if corruption_type not in mapping:
+        return node
+
+    fields = mapping[corruption_type]
+    if severity != 1.0:
+        scaled = {}
+        for field, plausible in fields.items():
+            clean = getattr(node, field, 0.0)
+            clean = 0.0 if (clean is None or not np.isfinite(clean)) else float(clean)
+            scaled[field] = clean + severity * (plausible - clean)
+        fields = scaled
+    return node._replace(**fields)
 
 
-def corrupt_obs_dict(obs_dict, handle, corruption_type):
+def corrupt_obs_dict(obs_dict, handle, corruption_type, severity=1.0):
     """Apply a single-agent corruption, returning a new obs_dict dict."""
     new_obs = dict(obs_dict)
     if handle in new_obs and new_obs[handle] is not None:
-        new_obs[handle] = corrupt_node(new_obs[handle], corruption_type)
+        new_obs[handle] = corrupt_node(new_obs[handle], corruption_type, severity)
     return new_obs
 
 
@@ -152,18 +166,34 @@ def disruption_reward(obs_before, obs_after):
     return reward
 
 
-def corrupt_vector(vec: np.ndarray, ctype: str) -> np.ndarray:
+def corrupt_vector(vec: np.ndarray, ctype: str, severity: float = 1.0,
+                   bound=None) -> np.ndarray:
     """
-    Apply a format-agnostic corruption to any flat observation vector.
+    Apply a corruption to a flat observation vector.
 
-    Used by perturb_vector() when injecting perturbations into non-TreeObs
-    formats (e.g. maze-rl internal graph observations).  No assumption is made
-    about the vector's semantic layout — corruptions are statistical.
+    Used by perturb_vector() when injecting perturbations into non-TreeObs formats
+    (e.g. the maze graph observation). When the vector IS a maze observation, the
+    corruption is written into the fields its type is about; for any other width no
+    semantic layout is known and the corruption is statistical.
 
     corruption_type:
         "blank"                      - zero the entire vector (full blindness)
         "conflict"/"target"/"malfunction" - amplify values ×3 (phantom danger)
         "speed"/"direction"          - negate values (reversed perception)
+
+    Args:
+        vec: the clean observation vector.
+        ctype: corruption type, one of CORRUPTION_TYPES.
+        severity: how far past the plausible value to push the claim. 1.0 writes the
+            plausible value itself; larger values leave the range the simulator can
+            produce, which is the axis the policy is actually sensitive to. Ignored for
+            "blank" and on the statistical path, which have no per-field target value.
+        bound: optional (low, high) of the observation space, applied after the
+            corruption so the result stays a value the space can hold. None means no
+            clip.
+
+    Returns:
+        A corrupted copy of vec.
     """
     if ctype not in CORRUPTION_TYPES:
         # A silently unrecognised type returns the vector unchanged, which scores
@@ -181,9 +211,9 @@ def corrupt_vector(vec: np.ndarray, ctype: str) -> np.ndarray:
     # "malfunction" all became "multiply the whole vector by 3", which was measured to
     # change the BC policy's action in 0 of 25 episodes -- recorded as an attack, but not
     # one the policy could respond to.
-    semantic = _semantic_corruption(v, ctype)
+    semantic = _semantic_corruption(v, ctype, severity)
     if semantic is not None:
-        return semantic
+        return _clip_to_space(semantic, bound)
 
     if ctype == "blank":
         v[:] = 0.0
@@ -191,12 +221,57 @@ def corrupt_vector(vec: np.ndarray, ctype: str) -> np.ndarray:
         v *= 3.0
     else:  # "speed", "direction"
         v *= -1.0
-    return v
+    return _clip_to_space(v, bound)
 
 
-def _semantic_corruption(v: np.ndarray, ctype: str):
+def _clip_to_space(v, bound):
+    """Clip into the observation space's declared range; a bound of None means no clip."""
+    if bound is None:
+        return v
+    low, high = bound
+    return np.clip(v, low, high)
+
+
+def clip_to_budget(delta, clean, xi):
+    """
+    Enforce a perturbation budget on an already-computed delta.
+
+    The other domains in this benchmark bound the attacker: the power-grid adversarial
+    env clips its perturbation to +/- epsilon (0.1 by default) before adding it to the
+    observation. Railway had no bound, so the attacks that work here are ones no bounded
+    attacker could play, and a robustness number from this domain was not comparable with
+    a bounded one.
+
+    The bound is relative rather than absolute because these observations are not
+    normalised: fields range from a -1 "absent" sentinel to distances in the tens, so one
+    absolute epsilon would be most of a flag's range and a rounding error on a distance.
+    Each element may move by xi times its own clean magnitude, with a floor of 1.0 so a
+    field that reads exactly 0 can still be perturbed by xi.
+
+    Args:
+        delta: the (perturbed - clean) vector.
+        clean: the clean observation the delta applies to.
+        xi: budget as a fraction of each element's magnitude. None means unbounded.
+
+    Returns:
+        The delta, clipped elementwise. Unchanged when xi is None.
+    """
+    if xi is None:
+        return delta
+    limit = float(xi) * np.maximum(np.abs(np.asarray(clean, dtype=np.float64)), 1.0)
+    return np.clip(delta, -limit, limit)
+
+
+def _semantic_corruption(v: np.ndarray, ctype: str, severity: float = 1.0):
     """
     Write the corruption into the maze observation fields it is actually about.
+
+    `severity` scales the deviation from the clean value, so severity 1.0 writes the
+    plausible value for this corruption type and larger severities push the same claim
+    past what the simulator produces. The scaling is signed, so a claim whose plausible
+    value sits at a boundary (a conflict at distance 0) overshoots into the numbers the
+    policy is actually sensitive to, while one pointing at the "absent" sentinel
+    saturates there -- an asymmetry of the representation, not of the attack.
 
     Returns the corrupted vector, or None when this is not a maze observation of the
     expected width, when the layout cannot be read, or when the type has no field
@@ -228,7 +303,7 @@ def _semantic_corruption(v: np.ndarray, ctype: str):
         # assumption.
         finite = out[np.isfinite(out)]
         value = float(np.max(np.abs(finite))) if finite.size else 1.0
-    out[idx] = value
+    out[idx] = out[idx] + severity * (value - out[idx])
     if flag_idx.size:
-        out[flag_idx] = 1.0
+        out[flag_idx] = out[flag_idx] + severity * (1.0 - out[flag_idx])
     return out

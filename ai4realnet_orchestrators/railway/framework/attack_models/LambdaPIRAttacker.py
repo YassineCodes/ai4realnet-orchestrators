@@ -96,7 +96,9 @@ class LambdaPIRAttacker(BaseAttackerClass):
             result = self.perturbation_agent.perturb(obs_dict)
             handle = self.perturbation_agent.last_handle
             ctype = self.perturbation_agent.last_ctype
-            self._publish_targets({handle: ctype} if handle is not None and ctype else {})
+            severity = getattr(self.perturbation_agent, "last_severity", 1.0)
+            self._publish_targets({handle: ctype} if handle is not None and ctype else {},
+                                  {handle: severity} if handle is not None and ctype else {})
             return result
         except Exception as e:
             logger.error(f"Perturbation failed: {e}")
