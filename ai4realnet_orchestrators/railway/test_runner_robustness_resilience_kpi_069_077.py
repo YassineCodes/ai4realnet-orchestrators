@@ -713,7 +713,10 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
                     attacker = GEPerturbAttacker(
                         defender=self._defender_agent,
                         n_agents=n_agents,
-                        n_candidates=8,
+                        # None keeps the fraction of the action space this attacker
+                        # searched before the space gained a severity axis; a fixed 8
+                        # would now cover 13% of it instead of 44%.
+                        n_candidates=None,
                         seed=3,
                     )
                 elif attacker_type == "Random":

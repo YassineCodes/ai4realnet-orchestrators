@@ -715,13 +715,11 @@ class MazeFlatlandDefender(RailwayDefender):
         nine, corrupting every GEPerturb episode and making the pass take ~30 minutes
         instead of ~1. Stepping now lives solely in act_and_step().
 
-        LIMITATION: the maze policy reads the maze observation, not the TreeObs dict
-        passed in here, so a perturbation applied to obs_dict cannot reach it. A
-        query-based attacker such as GEPerturb scores its candidates through this
-        method and therefore sees every candidate score identically: its selection
-        carries no gradient information. The attack it finally publishes IS applied
-        (act_and_step() applies it to the maze observation), but it was chosen blind.
-        Report that as a limitation of the attacker, not as robustness of the agent.
+        The maze policy reads the maze observation, not the TreeObs dict passed in
+        here, so a perturbation applied to obs_dict cannot reach it. A query-based
+        attacker must therefore score its candidates through act_with_corruption(),
+        which applies the candidate to the maze observation; scoring them through this
+        method gives every candidate the same score and selects blind.
 
         Args:
             obs_dict: TreeObs per handle. Used only to determine which handles are active.
@@ -740,10 +738,47 @@ class MazeFlatlandDefender(RailwayDefender):
                 "passed here do not reach it; query-based attackers will see no change."
             )
 
+        return self._query(obs_dict, self._maze_obs)
+
+    def act_with_corruption(self, obs_dict: dict, ctype: str,
+                            severity: float = 1.0) -> dict:
+        """
+        Action the policy would take if this corruption were applied. No side effects.
+
+        act() cannot serve a query-based attacker, because the perturbation it would
+        score lives on the TreeObs and the policy reads the maze observation; every
+        candidate therefore scored the same and GEPerturbAttacker selected blind. This
+        applies the candidate to the maze observation instead, so the score reflects what
+        the corruption would really do.
+
+        Like act(), this must not advance the maze env: GEPerturbAttacker calls it once
+        per candidate, and stepping here would race the env ahead of the framework by
+        that factor.
+
+        Args:
+            obs_dict: TreeObs per handle, used only for the returned dict shape.
+            ctype: candidate corruption type.
+            severity: candidate severity.
+
+        Returns:
+            dict: {handle: action} under the candidate corruption. Falls back to the
+                unperturbed query if the corruption cannot be applied, which scores the
+                candidate as ineffective rather than inventing a difference.
+        """
+        if self._maze_obs is None:
+            return {handle: 0 for handle in obs_dict}
+        try:
+            policy_obs, _delta = self._apply_vector_attack(self._maze_obs, ctype, severity)
+        except Exception as e:
+            logger.warning("act_with_corruption: could not apply %r: %s", ctype, e)
+            return self.act(obs_dict)
+        return self._query(obs_dict, policy_obs)
+
+    def _query(self, obs_dict: dict, policy_obs: dict) -> dict:
+        """Policy query on a given maze observation, without touching the env."""
         try:
             actor_id = self._maze_env.actor_id()
             handle = getattr(actor_id, "agent_id", None)
-            policy_obs = self._maze_obs
             if "train_move_mask" not in policy_obs:
                 raise RuntimeError(
                     "maze observation is missing 'train_move_mask'; refusing to "
@@ -755,14 +790,12 @@ class MazeFlatlandDefender(RailwayDefender):
         except RecursionError:
             raise
         except Exception as e:
-            logger.warning(f"MazeFlatlandDefender.act() query failed: {e}")
+            logger.warning(f"MazeFlatlandDefender._query() failed: {e}")
             return {h: 0 for h in obs_dict}
-
         actions = {h: 0 for h in obs_dict}
         if handle is not None and handle in actions:
             actions[handle] = action
         return actions
-
 
     def act_comparison(self, obs_dict: dict) -> dict:
         """

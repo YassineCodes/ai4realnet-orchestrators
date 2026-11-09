@@ -95,13 +95,22 @@ class GradientEstimationPerturbationAgent(BasePerturbationAgent):
         best_score = -np.inf
         best_action = None
 
+        # Score against the representation the policy actually reads when the defender
+        # can do that. Scoring a corrupted TreeObs against a defender that reads a maze
+        # observation gave every candidate the same score, so the search carried no
+        # information and this attacker fell through to its random fallback every step.
+        scorer = getattr(self.defender, "act_with_corruption", None)
+
         for idx in indices:
             handle, ctype, severity = self._actions[idx]
-            candidate_obs = corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype,
-                                             severity)
 
             try:
-                perturbed_actions = self.defender.act(candidate_obs)
+                if scorer is not None:
+                    perturbed_actions = scorer(obs_dict, ctype, severity)
+                else:
+                    candidate_obs = corrupt_obs_dict(copy.deepcopy(obs_dict), handle,
+                                                     ctype, severity)
+                    perturbed_actions = self.defender.act(candidate_obs)
                 perturbed_vec = np.array(
                     [perturbed_actions.get(h, 0) for h in sorted(obs_dict.keys())],
                     dtype=float,

@@ -280,3 +280,71 @@ def test_the_declared_space_bound_is_read_from_the_env():
     assert bounds and all(b == (-1.0, 8.0) for b in bounds), (
         "the corruption was not given the observation space the env declares"
     )
+
+
+# ----------------------------------------------------------------------------------
+# 7. A query-based attacker must score against the observation the policy reads
+# ----------------------------------------------------------------------------------
+
+def test_act_with_corruption_scores_against_the_policys_own_observation():
+    """
+    The defect this guards: GEPerturbAttacker scored candidates by corrupting the
+    TreeObs and calling act(). The maze policy does not read the TreeObs, so every
+    candidate scored identically, the best score was always 0, and the attacker fell
+    through to its random fallback on every step -- its search carried no information.
+    """
+    defender = _make_defender(attacker=None)
+    obs_dict = {h: None for h in range(N_TRAINS)}
+
+    clean = defender.act(obs_dict)
+    # FakePolicy picks on the sign of the observation sum; blanking flips it.
+    corrupted = defender.act_with_corruption(obs_dict, "blank")
+    assert clean != corrupted, (
+        "a corruption that changes the policy's action scored as no change"
+    )
+
+
+def test_act_with_corruption_does_not_advance_the_env():
+    """One query per candidate: stepping here would race the env ahead of the framework."""
+    from defenders_maze import MazeFlatlandDefender
+
+    maze_env = FakeMazeEnv()
+    defender = MazeFlatlandDefender(maze_env=maze_env, policy=FakePolicy(),
+                                    n_trains=N_TRAINS, attack_mode="obs_perturb")
+    defender._maze_obs = maze_env.obs()
+    obs_dict = {h: None for h in range(N_TRAINS)}
+
+    before = (maze_env._cursor, maze_env._rail_env._elapsed_steps)
+    for _ in range(10):
+        defender.act_with_corruption(obs_dict, "conflict", 1000.0)
+    assert (maze_env._cursor, maze_env._rail_env._elapsed_steps) == before
+
+
+def test_the_gradient_estimation_attacker_uses_the_corruption_aware_scorer():
+    from perturbation_agents.grad_est_perturb_agent import (
+        GradientEstimationPerturbationAgent,
+    )
+
+    class _Defender:
+        def __init__(self):
+            self.act_calls = 0
+            self.scorer_calls = []
+
+        def act(self, obs_dict):
+            self.act_calls += 1
+            return {h: 0 for h in obs_dict}
+
+        def act_with_corruption(self, obs_dict, ctype, severity=1.0):
+            self.scorer_calls.append((ctype, severity))
+            # Report a changed action, so the search has something to prefer and does
+            # not reach the random fallback.
+            return {h: 1 for h in obs_dict}
+
+    defender = _Defender()
+    agent = GradientEstimationPerturbationAgent(defender=defender, n_agents=N_TRAINS)
+    agent.perturb({h: None for h in range(N_TRAINS)})
+
+    assert defender.scorer_calls, "the attacker never scored against the maze observation"
+    assert len(defender.scorer_calls) == agent.n_candidates
+    # The candidate it settles on must be one it actually scored.
+    assert (agent.last_ctype, agent.last_severity) in defender.scorer_calls
