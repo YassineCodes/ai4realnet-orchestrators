@@ -175,6 +175,16 @@ def corrupt_vector(vec: np.ndarray, ctype: str) -> np.ndarray:
     v = vec.copy().astype(np.float64)
     if len(v) == 0:
         return v
+
+    # Prefer the named fields when this vector IS a maze observation, so the corruption
+    # type keeps the meaning it has on a TreeObs. Without this, "conflict", "target" and
+    # "malfunction" all became "multiply the whole vector by 3", which was measured to
+    # change the BC policy's action in 0 of 25 episodes -- recorded as an attack, but not
+    # one the policy could respond to.
+    semantic = _semantic_corruption(v, ctype)
+    if semantic is not None:
+        return semantic
+
     if ctype == "blank":
         v[:] = 0.0
     elif ctype in ("conflict", "target", "malfunction"):
@@ -182,3 +192,43 @@ def corrupt_vector(vec: np.ndarray, ctype: str) -> np.ndarray:
     else:  # "speed", "direction"
         v *= -1.0
     return v
+
+
+def _semantic_corruption(v: np.ndarray, ctype: str):
+    """
+    Write the corruption into the maze observation fields it is actually about.
+
+    Returns the corrupted vector, or None when this is not a maze observation of the
+    expected width, when the layout cannot be read, or when the type has no field
+    mapping ("blank" means total blindness, which is the whole vector by definition).
+    """
+    if ctype == "blank":
+        return None
+    try:
+        from perturbation_agents.maze_obs_layout import layout_size, semantic_indices
+    except ImportError:  # pragma: no cover - module always ships beside this one
+        return None
+
+    size = layout_size()
+    # Only when this vector is one maze observation. A different width means a TreeObs
+    # vector or some other format, where the statistical corruption is the right thing.
+    if size is None or len(v) != size:
+        return None
+
+    resolved = semantic_indices(ctype)
+    if resolved is None:
+        return None
+    idx, value, flag_idx = resolved
+
+    out = v.copy()
+    if value is None:
+        # "target": the goal should look as distant as anything this observation can
+        # express. Taken from the observation itself rather than a fixed constant, so it
+        # stays inside the range the policy was trained on and needs no map-size
+        # assumption.
+        finite = out[np.isfinite(out)]
+        value = float(np.max(np.abs(finite))) if finite.size else 1.0
+    out[idx] = value
+    if flag_idx.size:
+        out[flag_idx] = 1.0
+    return out

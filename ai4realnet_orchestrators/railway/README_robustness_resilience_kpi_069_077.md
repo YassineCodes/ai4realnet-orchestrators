@@ -166,6 +166,102 @@ values, 48 per train) — a representation the BC policy never consumes. So
 computed on the TreeObs. Those two are a residual instance of the representation mismatch
 and should not be read as "how far the policy's input moved".
 
+### What this benchmark actually measures
+
+Measured against the reference BC policy, by writing a chosen value into a chosen group
+of maze observation fields and recording how often the policy's action changes
+(12 episodes per cell):
+
+| field group written | = -1 | = 0 | = 1 | = 1369 |
+|---------------------|------|-----|-----|--------|
+| `potential_conflict_dist` (3 fields) | 0.000 | 0.000 | 0.000 | **0.252** |
+| `target_dist` (12) | 0.017 | 0.016 | 0.016 | **0.161** |
+| `train_speed` (1) | 0.000 | 0.000 | 0.000 | **0.095** |
+| `other_train_dist` / `conflicting_train_distance` (6) | 0.000 | 0.001 | 0.002 | **0.245** |
+| `deadlock` (12) | 0.001 | 0.000 | 0.002 | **0.189** |
+| `obstructed` (3) | 0.000 | 0.000 | 0.001 | **0.189** |
+| `unusable_switch_dist` (3) | 0.001 | 0.001 | 0.001 | **0.249** |
+| *all 86 fields set to 0, which is what the random baseline does* | | **0.249** | | |
+
+No semantically meaningful value changes the policy's behaviour. Claiming a conflict is
+imminent (0 or 1, where -1 is the "none" sentinel) does nothing. Claiming a conflict at
+distance 1369 — further than the map is wide, a value the field can never legitimately
+hold — does everything. And it does not matter which field carries the magnitude:
+`potential_conflict_dist = 1369` (0.252), `unusable_switch_dist = 1369` (0.249) and
+blanking all 86 fields (0.249) are the same attack as far as the policy is concerned.
+
+The dose-response confirms it. `potential_conflict_dist` never exceeds 20 in a clean
+rollout:
+
+| value written | 2 | 5 | 20 (its real maximum) | 50 | 100 | 500 | 1369 |
+|---------------|---|---|------------------------|----|-----|-----|------|
+| action change | 0.000 | 0.001 | 0.005 | 0.018 | 0.042 | 0.176 | 0.252 |
+
+Inside the range the field actually takes, the attack is worth 0.005. It needs 25-70x the
+field's legitimate maximum to work.
+
+So these KPIs measure **the policy's sensitivity to out-of-range numerical magnitude**,
+not its robustness to plausible-but-false observations. Three consequences:
+
+1. **There is almost nothing for a learned attacker to learn.** The attackers' action
+   space is (which train) x (which corruption type) — 19 actions for 3 trains. It has no
+   magnitude axis, so the only effective attack direction cannot be expressed in it.
+   Every attacker is searching a space in which the effective dimension is absent, which
+   is why none of them beats a baseline that happens to produce a large out-of-range push.
+2. **`train_speed` is unattackable by construction.** It holds exactly one distinct value
+   (1.0) across 285 clean observations, because training used
+   `speed_ratio_map={1.0: 1.0}`. The policy never saw it vary and cannot have learned to
+   use it.
+3. **Under a perturbation budget, all of these attacks score zero.** ATM clips at
+   xi = 0.1; railway has no budget, and the table above shows these attacks live entirely
+   outside any plausible one. A cross-domain robustness claim between the two domains is
+   not comparing like with like until railway is budgeted.
+
+### Corruption types must be resolved against the observation the policy reads
+
+`corrupt_node()` honours a corruption type's meaning on a TreeObs, because a TreeObs has
+named fields. The policy reads the maze graph observation instead: one flat vector per
+train. `corrupt_vector()` was written to be format-agnostic — "corruptions are
+statistical" — so on that vector all six types collapsed to three whole-vector
+operations:
+
+| type | whole-vector operation | measured action change |
+|------|------------------------|------------------------|
+| `blank` | x0 | 0.254 |
+| `conflict`, `target`, `malfunction` | x3 | **0.000000** |
+| `speed`, `direction` | x-1 | 0.263 |
+
+The x3 class changed the policy's action in **zero** of 25 episodes while still recording
+a non-zero perturbation, so an attacker that chose one of those three was scored as having
+attacked when nothing reached the decision. `conflict`, `target` and `malfunction` were
+identical to each other to six decimals, as were `speed` and `direction`: six choices,
+three outcomes.
+
+`disruption_reward()` pays for exactly the three inert ones. It rewards movement in
+`dist_potential_conflict` (-> `conflict`), `dist_min_to_target` (-> `target`) and
+`num_agents_malfunctioning` (-> `malfunction`), and pays nothing for `blank`, `speed` or
+`direction`. The payout ordering — `target` ~ 1e5, `malfunction` ~ 5e2, `conflict` ~ 0 —
+predicts what each attacker converged on (LambdaPIR: `target` 86%, `conflict` 11%). The
+share of an attacker's choices falling in the inert class predicts its measured
+effectiveness at Pearson -0.980, which accounts for the whole attacker ranking.
+
+`perturbation_agents/maze_obs_layout.py` now resolves each corruption type to the maze
+observation fields it is about, using maze-flatland's own
+`GraphDirectionalObservationConversion.convert_to_dict()` key list at runtime. Neither the
+vector width nor the field order is hardcoded here, so a change on the maze-flatland side
+is picked up rather than silently mismatched. `target` went from 0.000 to 0.118 action
+change, and all six types are now distinct.
+
+This does not make the learned attackers win, and it was never going to: it restores the
+semantic axis, while the table above shows the effective axis is magnitude. With it in
+place LambdaPIR moves from completely ineffective (-0.020 arrival) to substantial
+(-0.213), and remains behind the random baseline (-0.407) on a paired per-episode
+comparison over the same seeds (0.273 vs 0.338 action change, Wilcoxon z = -1.86,
+p = 0.064).
+
+> The 200-episode table above predates this change: it was measured with the whole-vector
+> corruption, so the three inert corruption types were still inert in it.
+
 ### When a robustness score is not a robustness score
 
 Only agents that derive their actions from the observation can be scored meaningfully.
