@@ -183,39 +183,76 @@ of maze observation fields and recording how often the policy's action changes
 | `unusable_switch_dist` (3) | 0.001 | 0.001 | 0.001 | **0.249** |
 | *all 86 fields set to 0, which is what the random baseline does* | | **0.249** | | |
 
-No semantically meaningful value changes the policy's behaviour. Claiming a conflict is
-imminent (0 or 1, where -1 is the "none" sentinel) does nothing. Claiming a conflict at
-distance 1369 — further than the map is wide, a value the field can never legitimately
-hold — does everything. And it does not matter which field carries the magnitude:
-`potential_conflict_dist = 1369` (0.252), `unusable_switch_dist = 1369` (0.249) and
-blanking all 86 fields (0.249) are the same attack as far as the policy is concerned.
+1369 is the map's cell count (the scenario is 37x37), used as a value no distance field
+could legitimately hold. What the fields do hold, over 468 observations of 12 clean
+episodes:
 
-The dose-response confirms it. `potential_conflict_dist` never exceeds 20 in a clean
-rollout:
+| field | clean min | clean max |
+|-------|-----------|-----------|
+| `timesteps_left` | 34 | 82 |
+| `target_dist` | -1 | 94 |
+| `distance` | -1 | 39 |
+| `unusable_switch_dist` | -1 | 24 |
+| `other_train_dist` | -1 | 2 |
+| `potential_conflict_dist` | -1 | -1 (never fires in these scenarios) |
+| `train_speed` | 1 | 1 |
+| `deadlock`, `obstructed` | -1 | 0 |
+
+So the largest legitimate value anywhere in the vector is 94, and -1 is the
+absent/not-applicable sentinel on about 50 of the 86 positions.
+
+For a corruption confined to one field group, magnitude is the axis that matters.
+`potential_conflict_dist` never exceeds 20 in a clean rollout:
 
 | value written | 2 | 5 | 20 (its real maximum) | 50 | 100 | 500 | 1369 |
 |---------------|---|---|------------------------|----|-----|-----|------|
 | action change | 0.000 | 0.001 | 0.005 | 0.018 | 0.042 | 0.176 | 0.252 |
 
-Inside the range the field actually takes, the attack is worth 0.005. It needs 25-70x the
-field's legitimate maximum to work.
+Inside the range the field actually takes, the attack is worth 0.005; it needs 25-70x the
+field's legitimate maximum to work. The same holds when only the sentinel positions are
+rewritten and the rest of the vector is left intact — a plausible value is absorbed, an
+out-of-range one dominates:
 
-So these KPIs measure **the policy's sensitivity to out-of-range numerical magnitude**,
-not its robustness to plausible-but-false observations. Three consequences:
+| only the -1 positions rewritten to | 0 | 1 | 94 |
+|------------------------------------|---|---|----|
+| action change | 0.000 | 0.002 | **0.249** |
+| arrival | 0.972 | 0.972 | **0.639** |
 
-1. **There is almost nothing for a learned attacker to learn.** The attackers' action
-   space is (which train) x (which corruption type) — 19 actions for 3 trains. It has no
-   magnitude axis, so the only effective attack direction cannot be expressed in it.
-   Every attacker is searching a space in which the effective dimension is absent, which
-   is why none of them beats a baseline that happens to produce a large out-of-range push.
-2. **`train_speed` is unattackable by construction.** It holds exactly one distinct value
-   (1.0) across 285 clean observations, because training used
-   `speed_ratio_map={1.0: 1.0}`. The policy never saw it vary and cannot have learned to
-   use it.
-3. **Under a perturbation budget, all of these attacks score zero.** ATM clips at
-   xi = 0.1; railway has no budget, and the table above shows these attacks live entirely
-   outside any plausible one. A cross-domain robustness claim between the two domains is
-   not comparing like with like until railway is budgeted.
+Magnitude is **not** the axis once the whole vector is overwritten, which is worth stating
+because the obvious generalisation from the table above is wrong:
+
+| all 86 fields set to | -1 | 0 | 1 | 94 | 1369 |
+|----------------------|----|---|---|----|------|
+| action change | 0.249 | 0.249 | 0.189 | 0.189 | 0.189 |
+| arrival | 0.639 | 0.639 | 0.694 | 0.694 | 0.694 |
+
+1, 94 and 1369 are identical to six decimals, as are -1 and 0: there are only two
+outcomes, not five. With every input equal to one constant the network emits a fixed
+logit vector, so the policy collapses to a constant preference order within the legal
+action mask — two constants, two orders. That is the policy ignoring its observation
+altogether, and 64% of trains still arrive, because the action mask (which the attacker
+correctly cannot touch) still forbids illegal moves. -1 is also a legitimate value, so
+an in-range attack reaches that point too.
+
+Three consequences:
+
+1. **The random baseline very nearly saturates the channel.** Blanking gives arrival
+   0.639. The strongest attack found by hand — `target_dist` or `other_train_dist` set to
+   1369 — gives 0.556, against 0.972 unperturbed. The floor is not 0: it is whatever the
+   untouched action mask alone delivers. The learned attackers are competing for about
+   0.08 of arrival rate, not for the whole range, which is most of why none of them beats
+   the baseline.
+2. **That remaining 0.08 is reachable only through magnitude, which the attackers cannot
+   express.** Their action space is (which train) x (which corruption type) — 19 actions
+   for 3 trains, with no magnitude axis. Extending it to (train x type x severity) is the
+   change that would make the headroom learnable, and 0.556 vs 0.639 is the number to
+   beat.
+3. **`train_speed` is unattackable by construction.** It holds exactly one distinct value
+   (1.0) across the clean rollouts, because training used `speed_ratio_map={1.0: 1.0}`.
+   The policy never saw it vary and cannot have learned to use it.
+4. **Under a perturbation budget, the magnitude attacks score zero.** ATM clips at
+   xi = 0.1; railway has no budget. A cross-domain robustness claim between the two
+   domains is not comparing like with like until railway is budgeted.
 
 ### Corruption types must be resolved against the observation the policy reads
 
@@ -253,7 +290,9 @@ is picked up rather than silently mismatched. `target` went from 0.000 to 0.118 
 change, and all six types are now distinct.
 
 This does not make the learned attackers win, and it was never going to: it restores the
-semantic axis, while the table above shows the effective axis is magnitude. With it in
+semantic axis, while the tables above show that for an attack confined to one field group
+the effective axis is magnitude, and that the random baseline already lands close to the
+floor the action mask imposes. With it in
 place LambdaPIR moves from completely ineffective (-0.020 arrival) to substantial
 (-0.213), and remains behind the random baseline (-0.407) on a paired per-episode
 comparison over the same seeds (0.273 vs 0.338 action change, Wilcoxon z = -1.86,
