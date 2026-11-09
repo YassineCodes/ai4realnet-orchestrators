@@ -157,7 +157,13 @@ class FlatlandEnvironment:
 
         Returns:
             obs (np.ndarray):             Flat observation after the step.
-            perturbation (np.ndarray):    Difference vector (perturbed - clean) passed to the defender.
+            perturbation (np.ndarray):    The perturbation that was actually APPLIED to the
+                                          observation the policy read. For a defender that
+                                          drives its own env this is the delta in that
+                                          policy's own observation format, not the TreeObs
+                                          delta: the two are different representations, and
+                                          correlating action changes against a delta the
+                                          policy never received measures nothing.
             act (np.ndarray):             Actions taken (one int per agent).
             act_unperturbed (np.ndarray): Actions the defender would have taken on clean obs.
             reward (float):               Sum of all agents' rewards.
@@ -168,7 +174,11 @@ class FlatlandEnvironment:
 
         clean_obs = self._current_obs
 
-        # Apply perturbation
+        # Apply perturbation. This is the attacker's ONE decision per step: it selects
+        # the targets and corruption types, advances its own learning state, and
+        # publishes the choice in attacker.last_targets for the defender to apply.
+        # Calling perturb() a second time per step drew an independent sample, so the
+        # recorded perturbation belonged to a different draw than the applied one.
         if self.attacker is not None:
             perturbed_obs = self.attacker.perturb(clean_obs)
             perturbation = self._flatten_obs(perturbed_obs) - self._flatten_obs(clean_obs)
@@ -178,11 +188,18 @@ class FlatlandEnvironment:
 
         if self.drives_env:
             # One flat step inside the defender's env. It returns the actions actually
-            # taken, the counterfactual actions on clean observations, and the reward and
-            # done flag read from the very RailEnv the policy acted on.
-            action_dict, clean_action_dict, reward, done = self.defender.act_and_step(
+            # taken, the counterfactual actions on clean observations, the reward and
+            # done flag read from the very RailEnv the policy acted on, and the
+            # perturbation it applied to the policy's own observation.
+            action_dict, clean_action_dict, reward, done, applied = self.defender.act_and_step(
                 perturbed_obs, clean_obs
             )
+            # Record what the policy received, not what the attacker did to the TreeObs.
+            # The TreeObs delta above is the attacker's INTENT in a representation this
+            # policy never reads; reporting it as the perturbation made the vulnerability
+            # KPI correlate action changes with a perturbation that was never applied.
+            if applied is not None:
+                perturbation = np.asarray(applied, dtype=np.float64)
             self._current_obs = self.defender.tree_obs()
             # Must be refreshed here too: this branch returns early, and the resilience
             # KPIs and KPI-RF-078 are computed from this signal. Leaving it frozen made a

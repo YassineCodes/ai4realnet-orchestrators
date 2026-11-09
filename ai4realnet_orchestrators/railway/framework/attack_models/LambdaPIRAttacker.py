@@ -94,34 +94,19 @@ class LambdaPIRAttacker(BaseAttackerClass):
         """
         try:
             result = self.perturbation_agent.perturb(obs_dict)
-            self.last_handle = self.perturbation_agent.last_handle
-            self.last_ctype = self.perturbation_agent.last_ctype
+            handle = self.perturbation_agent.last_handle
+            ctype = self.perturbation_agent.last_ctype
+            self._publish_targets({handle: ctype} if handle is not None and ctype else {})
             return result
         except Exception as e:
             logger.error(f"Perturbation failed: {e}")
+            self._publish_targets({})
             return copy.deepcopy(obs_dict)
 
     def reset(self):
         """Reset between episodes."""
         if self.perturbation_agent:
             self.perturbation_agent.reset()
-
-    def perturb_vector(self, vec):
-        """
-        Negate the observation vector to disrupt the maze BC policy.
-
-        The maze BC policy uses Tanh activations on observations with large
-        dynamic range ([-1, 62]).  Amplifying types (×3) just saturate Tanh
-        further to the same sign — the action does not change.  Negation
-        (×−1) flips all activation signs: Tanh(−x) = −Tanh(x), forcing the
-        policy into maximally different territory.
-
-        The TreeObs Q-values select WHICH agent/field to corrupt; we ignore
-        the corruption-type hint and always negate for vector obs.
-        """
-        import numpy as np
-        from perturbation_agents.utils import corrupt_vector
-        return corrupt_vector(np.array(vec, dtype=np.float64), "speed")
 
     def get_stats(self) -> Dict[str, Any]:
         if self.perturbation_agent:

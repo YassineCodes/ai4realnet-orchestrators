@@ -131,8 +131,7 @@ class PPOAttacker(BaseAttackerClass):
 
         action_idx = self._select_action(state)
         handle, ctype = self._action_map[action_idx]
-        self.last_handle = handle
-        self.last_ctype = ctype
+        self._publish_targets({handle: ctype})
         perturbed = corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype)
         reward = disruption_reward(obs_dict, perturbed)
 
@@ -189,21 +188,6 @@ class PPOAttacker(BaseAttackerClass):
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self._net.parameters(), 0.5)
         self._optimizer.step()
-
-    def perturb_vector(self, vec) -> np.ndarray:
-        """
-        Use the actor-critic policy to select a corruption type, apply it to vec.
-        Falls back to random when the network is not yet built.
-        """
-        from perturbation_agents.utils import corrupt_vector
-        v = np.nan_to_num(np.array(vec, dtype=np.float64), nan=0.0, posinf=1e6, neginf=-1e6)
-        if self.obs_dim > 0 and self._net is not None:
-            state = np.pad(v, (0, max(0, self.obs_dim - len(v))))[:self.obs_dim]
-            action_idx = self._select_action(state)
-        else:
-            action_idx = int(self.space_prng.randint(self.action_dim))
-        _, ctype = self._action_map[action_idx]
-        return corrupt_vector(v, ctype)
 
     def save_model(self, path) -> None:
         if not _TORCH_AVAILABLE or self._net is None:

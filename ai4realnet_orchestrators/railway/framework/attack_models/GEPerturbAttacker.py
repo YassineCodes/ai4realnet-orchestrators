@@ -44,22 +44,9 @@ class GEPerturbAttacker(BaseAttackerClass):
     def load(self, path):
         pass
 
-    def perturb_vector(self, vec):
-        """
-        Add scaled Gaussian noise — gradient estimation requires defender
-        interaction that is unavailable at maze-obs-injection time, so we
-        fall back to statistical noise scaled to the vector's own std.
-        """
-        import numpy as np
-        v = np.array(vec, dtype=np.float64)
-        std = float(np.std(v))
-        std = std if std > 1e-8 else 1.0
-        noise = self.model.space_prng.randn(len(v)) * std
-        return v + noise
-
     def perturb(self, obs_dict):
         obs_t = copy.deepcopy(obs_dict)
         result = self.model.perturb(obs_t)
-        self.last_handle = self.model.last_handle
-        self.last_ctype = self.model.last_ctype
+        handle, ctype = self.model.last_handle, self.model.last_ctype
+        self._publish_targets({handle: ctype} if handle is not None and ctype else {})
         return result

@@ -78,6 +78,7 @@ class RandomPerturbAttacker(BaseAttackerClass):
             dict: Perturbed observation dict (deep copy with some agents blanked).
         """
         perturbed = copy.deepcopy(obs_dict)
+        blinded = {}
 
         for handle in obs_dict:
             # Decrement existing blindness counter
@@ -90,19 +91,17 @@ class RandomPerturbAttacker(BaseAttackerClass):
 
             if self._blind_counters.get(handle, 0) > 0:
                 perturbed[handle] = _blank_node()
+                blinded[handle] = "blank"
 
+        # Publish exactly which trains were blinded. Without this the defender cannot
+        # tell which handles this attacker chose and falls back to corrupting every
+        # train, so a random attacker that blinded one train was applied to all of
+        # them -- giving it a breadth no targeted attacker ever gets and making the
+        # comparison between them meaningless.
+        self._publish_targets(blinded)
         return perturbed
-
-    def perturb_vector(self, vec):
-        """
-        Blank the entire vector with probability perturbation_rate (whole-sensor failure).
-        Otherwise return a copy unchanged.
-        """
-        import numpy as np
-        if self._rng.random() < self.perturbation_rate:
-            return np.zeros(len(vec), dtype=np.float64)
-        return np.array(vec, dtype=np.float64)
 
     def reset(self):
         """Reset blindness state between episodes."""
         self._blind_counters = {}
+        self._publish_targets({})

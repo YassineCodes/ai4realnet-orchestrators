@@ -68,35 +68,14 @@ class RLPerturbAttacker(BaseAttackerClass):
     def perturb(self, obs_dict):
         obs_t = copy.deepcopy(obs_dict)
         result = self.model.perturb(obs_t)
-        self.last_handle = self.model.last_handle
-        self.last_ctype = self.model.last_ctype
+        handle, ctype = self.model.last_handle, self.model.last_ctype
+        self._publish_targets({handle: ctype} if handle is not None and ctype else {})
         return result
 
     def reset(self):
         """Reset between episodes (triggers end-of-episode buffer entry)."""
         if self.model:
             self.model.reset()
-
-    def perturb_vector(self, vec):
-        """
-        Use the DQN policy to select a corruption type, apply it to the vector.
-        Falls back to random blank when the network is not yet built or the
-        vector dimension differs significantly.
-        """
-        import numpy as np
-        from perturbation_agents.utils import corrupt_vector
-        agent = self.model
-        v = np.nan_to_num(np.array(vec, dtype=np.float64), nan=0.0, posinf=1e6, neginf=-1e6)
-        if agent.obs_dim > 0 and agent._q_net is not None:
-            if len(v) < agent.obs_dim:
-                state = np.pad(v, (0, agent.obs_dim - len(v)))
-            else:
-                state = v[:agent.obs_dim]
-            action_idx = agent._select_action(state)
-        else:
-            action_idx = int(agent.space_prng.randint(agent.action_dim))
-        _, ctype = agent._action_map[action_idx]
-        return corrupt_vector(v, ctype)
 
     def save_model(self, path):
         """Save the trained DQN weights."""

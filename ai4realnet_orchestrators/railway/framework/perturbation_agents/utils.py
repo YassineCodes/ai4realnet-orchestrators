@@ -38,6 +38,12 @@ CHILD_DIRECTIONS = ["L", "F", "R", "B"]
 # Perturbation types (index = action id)
 CORRUPTION_TYPES = ["blank", "conflict", "target", "speed", "direction", "malfunction"]
 
+# Corruption applied to a flat observation vector when an attacker names a target but
+# no corruption type. Negation is used rather than an amplifying type because the maze
+# BC policy's Tanh activations saturate under amplification (same sign, so the action
+# does not change), while Tanh(-x) = -Tanh(x) does move the policy.
+DEFAULT_VECTOR_CTYPE = "speed"
+
 
 def node_to_vector(node):
     """Recursively flatten a Flatland TreeObs Node to a 1D numpy vector."""
@@ -159,6 +165,13 @@ def corrupt_vector(vec: np.ndarray, ctype: str) -> np.ndarray:
         "conflict"/"target"/"malfunction" - amplify values ×3 (phantom danger)
         "speed"/"direction"          - negate values (reversed perception)
     """
+    if ctype not in CORRUPTION_TYPES:
+        # A silently unrecognised type returns the vector unchanged, which scores
+        # the agent as robust against an attack that was never applied. Fail loudly.
+        raise ValueError(
+            f"corrupt_vector: unknown corruption type {ctype!r}; "
+            f"expected one of {CORRUPTION_TYPES}"
+        )
     v = vec.copy().astype(np.float64)
     if len(v) == 0:
         return v
@@ -166,6 +179,6 @@ def corrupt_vector(vec: np.ndarray, ctype: str) -> np.ndarray:
         v[:] = 0.0
     elif ctype in ("conflict", "target", "malfunction"):
         v *= 3.0
-    elif ctype in ("speed", "direction"):
+    else:  # "speed", "direction"
         v *= -1.0
     return v

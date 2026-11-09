@@ -3,15 +3,28 @@ Maze-Flatland defender wrappers for the AI4REALNET robustness/resilience framewo
 
 Integrates a trained maze-flatland behavioral cloning policy as a RailwayDefender.
 
-IMPORTANT — perturbation semantics:
-    The maze-flatland policy derives observations from the environment's internal
-    FlatlandMazeState, NOT from the obs_dict passed to act().  This means obs-level
-    perturbations (applied to TreeObs nodes) do NOT affect the maze policy's actions.
+IMPORTANT - perturbation semantics:
+    The maze-flatland policy does not read the obs_dict the framework passes to act().
+    Its input is the maze observation: the vector produced by
+    GraphDirectionalObservationConversion plus train_move_mask, built from the
+    environment's internal FlatlandMazeState. Corrupting a TreeObs node therefore
+    cannot, by itself, change an action.
+
+    How an attack reaches the policy:
+        - attack_mode="obs_perturb"  -> act_and_step() applies the attacker's chosen
+          corruption to the MAZE observation before the policy sees it. This does
+          change actions, and it is the mode the KPIs are reported from.
+        - attack_mode="state_inject" -> the RailEnv's internal state is corrupted, and
+          the maze observation builder reads the corruption on the next flat step.
+        - A query-based attacker that scores candidates through act() (GEPerturb)
+          cannot reach the policy at all: act() answers from the maze observation and
+          ignores the TreeObs it is handed, so every candidate scores identically.
 
     Robustness interpretation:
-        - obs_similarity score will be HIGH (actions don't change under obs perturbation)
-        - This reflects real robustness: the policy reads directly from env state
-        - Resilience (reward-based) IS affected when attackers influence train dynamics
+        An unchanged action is only evidence of robustness if the attack was actually
+        applied. act_and_step() returns the perturbation it applied; when that vector
+        is zero for a whole episode the attack never reached the policy, and the KPI
+        should be reported as NOT APPLICABLE rather than as high robustness.
 
 Usage:
     from defenders_maze import MazeFlatlandDefender, load_maze_policy
@@ -187,8 +200,10 @@ class MazeFlatlandDefender(RailwayDefender):
 
     The policy was trained to imitate ShortestPathPolicy via behavioral cloning.
     It drives a PARALLEL maze-rl env that mirrors the framework env step-for-step.
-    Because the maze policy reads from its own internal env state (not the perturbed
-    TreeObs passed by the framework), obs-level perturbations do NOT affect its actions.
+    The maze policy reads its own maze observation, not the perturbed TreeObs the
+    framework passes in, so a TreeObs-level perturbation reaches it only because
+    act_and_step() re-applies the attacker's chosen corruption to that maze
+    observation. See the module docstring.
 
     Actor sequencing:
         The maze-rl env is sequential — each call to step() processes one actor.
@@ -213,6 +228,10 @@ class MazeFlatlandDefender(RailwayDefender):
         self._tree_builder = None
         self._maze_obs = None
         self._warned_query_attacker = False
+        self._warned_blanket = False
+        # Width of one train's perturbable maze observation, learned on first use so
+        # the recorded perturbation vector keeps a constant length across steps.
+        self._maze_delta_width = None
         # "obs_perturb": perturb maze obs dict (Phase 1, oracle/white-box)
         # "state_inject": corrupt rail_env internal state (Phase 2, black-box)
         self._attack_mode = attack_mode
@@ -224,13 +243,6 @@ class MazeFlatlandDefender(RailwayDefender):
         self._cached_clean_actions: Optional[dict] = None
         # active attacker registered by Environment.reset() via set_attacker()
         self._attacker = None
-        # Re-entrancy guard. act() drives the attacker via attacker.perturb(), but a
-        # query-based attacker such as GEPerturbAttacker calls defender.act() from inside
-        # its own perturb() to score candidate perturbations. Without this flag the two
-        # call each other until the stack blows (RecursionError), which act()'s exception
-        # handler would then swallow into a silent do-nothing fallback -- scoring the
-        # agent as perfectly robust against the very attacker that probes it hardest.
-        self._driving_attacker = False
 
     def set_attacker(self, attacker) -> None:
         """Register the active attacker so act() injects perturbations into maze obs."""
@@ -255,65 +267,63 @@ class MazeFlatlandDefender(RailwayDefender):
                 a.reshape(arr.shape).astype(arr.dtype), dtype=val.dtype, device=val.device))
         return None, None
 
-    def _perturb_maze_obs(self, obs: dict, ctype: str = "speed") -> dict:
-        """
-        Apply a semantic corruption (by ctype) to every array-like entry of the maze
-        observation EXCEPT the action mask, which must stay exactly as the environment
-        produced it.
+    _MASK_KEY = "train_move_mask"
 
-        The mask is left untouched deliberately: corrupting or widening it would change
-        which actions the policy is allowed to take, which is manipulating the agent
-        rather than perturbing its perception.
+    def _perturbable_keys(self, obs: dict):
+        """Keys of obs that carry perturbable numbers, in a deterministic order."""
+        return [k for k in sorted(obs) if k != self._MASK_KEY]
+
+    def _apply_vector_attack(self, obs: dict, ctype: str):
+        """
+        Apply the attacker's already-chosen corruption to the maze observation.
+
+        The corruption TYPE was decided once, by the attacker's perturb() call on the
+        tree observations; this only applies that decision in the maze observation's
+        format. Deciding again here would mean the perturbation the policy receives is
+        not the perturbation that was recorded, and that a learning attacker's selection
+        is discarded at the point of use.
+
+        The action mask is left exactly as the environment produced it: corrupting or
+        widening it would change which actions the policy is ALLOWED to take, which is
+        manipulating the agent rather than perturbing its perception.
+
+        Args:
+            obs: the clean maze observation for the current actor.
+            ctype: corruption type published by the attacker for this handle.
+
+        Returns:
+            tuple: (perturbed_obs, delta) where delta is the flat
+                (perturbed - clean) vector over _perturbable_keys(obs), i.e. the
+                perturbation the policy ACTUALLY received.
 
         Raises:
             RuntimeError: if no entry could be perturbed. Silently returning the
-                observation unchanged would report the agent as robust to an attack that
-                was never applied.
+                observation unchanged would report the agent as robust to an attack
+                that was never applied.
         """
         from perturbation_agents.utils import corrupt_vector
         perturbed = {}
-        n_perturbed = 0
+        deltas = {}
         for key, val in obs.items():
-            arr, restore = (None, None) if key == "train_move_mask" else self._as_numpy(val)
+            arr, restore = (None, None) if key == self._MASK_KEY else self._as_numpy(val)
             if arr is None:
                 perturbed[key] = val
                 continue
             flat = arr.flatten().astype(np.float64)
-            perturbed[key] = restore(corrupt_vector(flat, ctype))
-            n_perturbed += 1
-        if n_perturbed == 0:
+            if self._attacker is not None and hasattr(self._attacker, "perturb_vector"):
+                out = np.asarray(self._attacker.perturb_vector(flat, ctype), dtype=np.float64)
+            else:
+                out = corrupt_vector(flat, ctype)
+            deltas[key] = out - flat
+            perturbed[key] = restore(out)
+        if not deltas:
             raise RuntimeError(
                 "MazeFlatlandDefender: no maze observation entry could be perturbed "
                 f"(keys={list(obs)}, types={[type(v).__name__ for v in obs.values()]}). "
                 "Refusing to report robustness for an attack that was not applied."
             )
-        return perturbed
-
-    def _perturb_maze_obs_vector(self, obs: dict) -> dict:
-        """
-        Apply attacker.perturb_vector() to all numpy arrays in maze obs.
-        Fallback for attackers that do not expose last_handle/last_ctype
-        (e.g. RandomPerturbAttacker).
-        """
-        if self._attacker is None or not hasattr(self._attacker, "perturb_vector"):
-            return obs
-        perturbed = {}
-        n_perturbed = 0
-        for key, val in obs.items():
-            arr, restore = (None, None) if key == "train_move_mask" else self._as_numpy(val)
-            if arr is None:
-                perturbed[key] = val
-                continue
-            flat = arr.flatten().astype(np.float64)
-            perturbed[key] = restore(np.asarray(self._attacker.perturb_vector(flat)))
-            n_perturbed += 1
-        if n_perturbed == 0:
-            raise RuntimeError(
-                "MazeFlatlandDefender: no maze observation entry could be perturbed "
-                f"(keys={list(obs)}). Refusing to report robustness for an attack that "
-                "was not applied."
-            )
-        return perturbed
+        delta = np.concatenate([deltas[k] for k in self._perturbable_keys(obs) if k in deltas])
+        return perturbed, delta
 
     def _get_rail_env(self):
         """Traverse the maze wrapper chain to reach the underlying RailEnv."""
@@ -432,43 +442,61 @@ class MazeFlatlandDefender(RailwayDefender):
         RailEnv advances only once the last actor has been served. This drives all
         n_trains actors, so one call equals one RailEnv step.
 
-        Perturbation semantics: the attacker picks a target (handle, corruption type)
-        from the tree observations, and the equivalent corruption is applied to that
-        train's maze observation before the policy sees it. Both observations now derive
-        from the same environment, so the attack and the measurement agree.
+        Perturbation semantics: the attacker decided once, in its own perturb() call on
+        the tree observations (driven by FlatlandEnvironment.step()), which trains to
+        corrupt and how. This method only APPLIES that decision in the maze
+        observation's format, to exactly those trains. It does not call perturb()
+        again: doing so drew a second, independent perturbation, so the magnitude that
+        was recorded belonged to a different sample than the one the policy received,
+        the attacker's exploration schedule decayed at twice its configured rate, and
+        half of a learning attacker's bootstrapped updates saw s' = s.
 
         Args:
             perturbed_obs: tree observations after the attacker's perturbation.
-            clean_obs: tree observations before it.
+            clean_obs: tree observations before it. Kept for interface compatibility;
+                the attack decision is read from the attacker, not re-derived here.
 
         Returns:
-            tuple: (actions, clean_actions, reward, done)
+            tuple: (actions, clean_actions, reward, done, applied_perturbation) where
+                applied_perturbation is the flat (perturbed - clean) maze-observation
+                delta the policy actually received, ordered by train handle.
         """
+        from perturbation_agents.utils import DEFAULT_VECTOR_CTYPE as default_ctype
+
         rail = self.rail_env
         actions = {}
         clean_actions = {}
 
-        chosen_handle = None
-        chosen_ctype = None
-        if self._attacker is not None and not self._driving_attacker:
-            self._driving_attacker = True
-            try:
-                self._attacker.perturb(clean_obs)
-                chosen_handle = getattr(self._attacker, "last_handle", None)
-                chosen_ctype = getattr(self._attacker, "last_ctype", None)
-            except RecursionError:
-                raise
-            except Exception as e:
-                logger.warning(f"attacker.perturb() failed: {e}")
-            finally:
-                self._driving_attacker = False
-
         attacker_active = self._attacker is not None
-        use_targeted = attacker_active and chosen_handle is not None
-        use_blanket = attacker_active and not use_targeted
+        published = getattr(self._attacker, "last_targets", None) if attacker_active else None
+        if published is not None:
+            # A published decision is authoritative, including the empty one: an
+            # attacker whose roll corrupted nothing this step must corrupt nothing
+            # here too, or a baseline that attacked one train gets applied to all of
+            # them and stops being comparable with a targeted attacker.
+            targets = dict(published)
+            use_blanket = False
+        else:
+            handle = getattr(self._attacker, "last_handle", None) if attacker_active else None
+            ctype = getattr(self._attacker, "last_ctype", None) if attacker_active else None
+            targets = {handle: ctype or default_ctype} if handle is not None else {}
+            # An attacker that publishes nothing at all gets the documented fallback of
+            # corrupting every train. Skipping the step instead would report the agent
+            # as robust against an attack that was never applied.
+            use_blanket = attacker_active and not targets
+        if use_blanket and not self._warned_blanket:
+            self._warned_blanket = True
+            logger.warning(
+                "%s published no attack target; falling back to corrupting every "
+                "train with '%s'. This gives it a breadth no targeted attacker has, "
+                "so the comparison against targeted attackers is not breadth-matched.",
+                getattr(self._attacker, "name", type(self._attacker).__name__),
+                default_ctype,
+            )
 
-        if self._attack_mode == "state_inject" and use_targeted:
-            self._inject_rail_state(chosen_handle, chosen_ctype or "malfunction")
+        if self._attack_mode == "state_inject" and targets:
+            for handle, ctype in targets.items():
+                self._inject_rail_state(handle, ctype or "malfunction")
 
         # One flat step means "the RailEnv advanced once", not "n_trains actor steps":
         # SubStepSkippingWrapper collapses sub-steps where the agent has no choice, so the
@@ -479,6 +507,7 @@ class MazeFlatlandDefender(RailwayDefender):
         start_elapsed = _elapsed()
         max_substeps = max(1, self._n_trains) * 4  # generous cap; guards against a stall
         maze_done = False
+        applied_deltas = {}
         for _ in range(max_substeps):
             if start_elapsed is not None and _elapsed() is not None and _elapsed() > start_elapsed:
                 break
@@ -489,23 +518,26 @@ class MazeFlatlandDefender(RailwayDefender):
                 break
 
             if self._attack_mode == "obs_perturb" and attacker_active:
-                # last_handle decides WHICH train is attacked; the attacker's own
-                # perturb_vector() decides HOW.
+                # The attacker's published decision says WHICH trains are attacked and
+                # with WHICH corruption type. Both come from the single perturb() call
+                # on the tree observations; nothing is re-chosen here.
                 #
-                # ctype ("conflict", "target", ...) names a field of the TreeObs. The maze
-                # observation is a different representation - a dense graph embedding -
-                # in which those names have no meaning, and re-deriving a corruption from
-                # ctype there applies an amplification that this policy's Tanh
-                # activations absorb, so the action never changes. LambdaPIR measured
-                # 0/25 action changes for precisely that reason, while its own
-                # perturb_vector (which negates rather than amplifies) flips the action.
-                # Delegating to the attacker keeps its strategy intact across
-                # observation formats.
-                attacked = (use_blanket or (use_targeted and handle == chosen_handle))
-                if attacked and hasattr(self._attacker, "perturb_vector"):
-                    policy_obs = self._perturb_maze_obs_vector(obs)
-                elif attacked:
-                    policy_obs = self._perturb_maze_obs(obs, chosen_ctype or "speed")
+                # ctype ("conflict", "target", ...) names a field of the TreeObs, and the
+                # maze observation is a different representation in which those names
+                # have no layout meaning, so corrupt_vector() maps each type onto a
+                # format-agnostic operation (zero / amplify / negate). The mapping is
+                # coarse, which is a documented limitation of comparing the two formats
+                # -- but it is the attacker's own choice that is mapped.
+                if handle in targets:
+                    ctype = targets[handle] or default_ctype
+                elif use_blanket:
+                    ctype = default_ctype
+                else:
+                    ctype = None
+                if ctype is not None:
+                    policy_obs, delta = self._apply_vector_attack(obs, ctype)
+                    if handle is not None:
+                        applied_deltas[handle] = delta
                 else:
                     policy_obs = obs
             else:
@@ -558,7 +590,54 @@ class MazeFlatlandDefender(RailwayDefender):
 
         self._cached_actions = dict(actions)
         self._cached_clean_actions = dict(clean_actions) if clean_actions else dict(actions)
-        return actions, self._cached_clean_actions, reward, done
+        applied = self._assemble_applied_perturbation(applied_deltas)
+        return actions, self._cached_clean_actions, reward, done, applied
+
+    def _assemble_applied_perturbation(self, applied_deltas: dict) -> np.ndarray:
+        """
+        Concatenate the per-train applied deltas into one fixed-length vector.
+
+        The maze env serves one train per sub-step and SubStepSkippingWrapper skips
+        trains that have no choice, so the number and identity of the trains served
+        varies from step to step. The recorded vector is therefore laid out by handle
+        (0 .. n_trains-1), with zeros for a train that was not served or not attacked,
+        which keeps it the same length at every step -- what the vulnerability metric
+        needs in order to attribute action changes to individual features.
+
+        Returns an all-zero vector when nothing was applied, which is the signal that
+        the attack never reached the policy (report the KPI as not applicable rather
+        than as high robustness).
+        """
+        width = self._maze_delta_width
+        if width is None:
+            for delta in applied_deltas.values():
+                width = int(len(delta))
+                self._maze_delta_width = width
+                break
+        if width is None:
+            # Nothing applied and no width learned yet: fall back to the clean maze
+            # observation's own width so the vector length stays stable from step one.
+            if self._maze_obs is not None:
+                try:
+                    width = sum(
+                        int(self._as_numpy(self._maze_obs[k])[0].size)
+                        for k in self._perturbable_keys(self._maze_obs)
+                        if self._as_numpy(self._maze_obs[k])[0] is not None
+                    )
+                    self._maze_delta_width = width
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.debug(f"could not measure maze observation width: {e}")
+                    width = 0
+            else:
+                width = 0
+        out = np.zeros(max(1, self._n_trains) * width, dtype=np.float64)
+        for handle, delta in applied_deltas.items():
+            if handle is None or width == 0 or len(delta) != width:
+                continue
+            start = int(handle) * width
+            if start + width <= len(out):
+                out[start:start + width] = delta
+        return out
 
     def act(self, obs_dict: dict) -> dict:
         """
@@ -572,10 +651,12 @@ class MazeFlatlandDefender(RailwayDefender):
         instead of ~1. Stepping now lives solely in act_and_step().
 
         LIMITATION: the maze policy reads the maze observation, not the TreeObs dict
-        passed in here, so a perturbation applied to obs_dict cannot reach it. Query-based
-        attackers such as GEPerturb therefore cannot influence this defender and will
-        measure no action change - the same structural immunity ShortestPathDefender has.
-        That is reported honestly rather than worked around; see the README.
+        passed in here, so a perturbation applied to obs_dict cannot reach it. A
+        query-based attacker such as GEPerturb scores its candidates through this
+        method and therefore sees every candidate score identically: its selection
+        carries no gradient information. The attack it finally publishes IS applied
+        (act_and_step() applies it to the maze observation), but it was chosen blind.
+        Report that as a limitation of the attacker, not as robustness of the agent.
 
         Args:
             obs_dict: TreeObs per handle. Used only to determine which handles are active.
@@ -622,8 +703,8 @@ class MazeFlatlandDefender(RailwayDefender):
         """
         Return the CLEAN (unperturbed) reference actions computed inside act().
 
-        These differ from self._cached_actions when the attacker's perturb_vector()
-        caused the maze policy to choose a different action — giving a real
+        These differ from self._cached_actions when the corruption applied to the maze
+        observation caused the policy to choose a different action - giving a real
         n_actions_changed signal equivalent to the power-grid framework.
 
         Falls back to self._cached_actions (no difference) if no attacker is active.

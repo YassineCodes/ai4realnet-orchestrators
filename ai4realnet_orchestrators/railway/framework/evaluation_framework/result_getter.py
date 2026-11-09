@@ -13,6 +13,7 @@ import os
 import pickle
 import time
 
+import numpy as np
 import pandas as pd
 
 from evaluation_framework.metrics import metrics
@@ -126,6 +127,23 @@ class result_getter:
             f"{'=' * 80}\n"
         )
 
+        # Did the attack ever reach the policy? perturbations holds what was APPLIED to
+        # the observation the policy read, so an all-zero record means no perturbation
+        # ever arrived -- against which an unchanged action is not evidence of
+        # robustness. Recorded here as data rather than decided per attacker name, so a
+        # new attacker is classified by what it did, not by a list someone maintains.
+        attack_reached_policy = any(
+            bool(np.any(np.asarray(p) != 0.0))
+            for ep_perturbations in perturbations
+            for p in ep_perturbations
+        )
+        if attacker is not None and not attack_reached_policy:
+            print(
+                f"[WARNING] {attacker_name}: every applied perturbation was zero -- the "
+                f"attack never reached the policy. Robustness KPIs are NOT APPLICABLE "
+                f"for this attacker; do not report an unchanged action as robustness."
+            )
+
         data_dict = {
             "observations": observations,
             "perturbations": perturbations,
@@ -133,6 +151,7 @@ class result_getter:
             "actions_unperturbed": actions_unperturbed,
             "rewards": rewards,
             "performance": performance,
+            "attack_reached_policy": attack_reached_policy,
         }
 
         os.makedirs(os.path.dirname(filename), exist_ok=True)

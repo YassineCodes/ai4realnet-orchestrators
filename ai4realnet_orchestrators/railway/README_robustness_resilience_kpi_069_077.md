@@ -51,6 +51,17 @@ Unlike the power grid domain, the railway attackers train from scratch during th
 
 ### Measured results
 
+> **SUPERSEDED — these numbers predate the attack decision/application fix and must be
+> re-run.** They were produced while `act_and_step()` made a second, independent attack
+> decision per step and discarded the attacker's chosen corruption type, and while the
+> recorded perturbation was the TreeObs delta rather than the delta applied to the
+> policy's own observation. `action_change_freq`, `reward_per_action_ratio`,
+> `degradation_time` and `area_between_curves` are measured from actions and rewards and
+> are affected only through the attackers' altered behaviour; `perturb_vulnerability` is
+> computed *from the perturbation vector itself* and was therefore correlating action
+> changes against a perturbation the policy never received — it is not interpretable for
+> this domain as published below.
+
 50 episodes against the bundled reference agent (`framework/agent.zip`). The unperturbed baseline delivers all three trains in 45 of 50 episodes, mean arrival 0.93.
 
 | Attacker | `action_change_freq` | `perturb_vulnerability` | `reward_per_action_ratio` | `degradation_time` | `area_between_curves` |
@@ -77,7 +88,42 @@ Aggregated across all six attackers:
 | `state_similarity` | 0.9539 |
 | `reward_per_action_ratio` | 0.5808 |
 
-Only agents that derive their actions from the observation can be scored meaningfully. Every attacker perturbs the observation, so a policy reading environment state directly (`ShortestPathDefender`) is unaffected by construction. The same applies to query-based attackers such as GEPerturb against a defender that consumes a different observation format: its score reflects that structural property rather than the agent's robustness.
+### When a robustness score is not a robustness score
+
+Only agents that derive their actions from the observation can be scored meaningfully.
+Every attacker perturbs the observation, so a policy reading environment state directly
+(`ShortestPathDefender`) is unaffected by construction.
+
+An unchanged action is evidence of robustness **only if the attack was actually applied
+to the observation the policy read**. Two cases where it was not:
+
+- **The perturbation never reached the policy.** `MazeFlatlandDefender`'s BC policy reads
+  the maze observation (`GraphDirectionalObservationConversion` + `train_move_mask`, built
+  from `FlatlandMazeState`), not the TreeObs the framework perturbs. In `obs_perturb` mode
+  the attacker's chosen corruption is re-applied to that maze observation, so the attack
+  does reach the policy and the KPI is valid. Where it cannot reach the policy at all, the
+  applied perturbation is identically zero; `result_getter` records this per attacker as
+  `attack_reached_policy=False` and prints a warning. **Report those KPIs as NOT
+  APPLICABLE, not as high robustness.**
+- **The attacker chose blind.** A query-based attacker such as GEPerturb scores candidate
+  perturbations through `defender.act()`, which answers from the maze observation and
+  ignores the TreeObs it is handed — so every candidate scores identically and its
+  selection carries no gradient information. The attack it publishes *is* applied, but it
+  was not informed. That is a limitation of the attacker against this defender, not
+  robustness of the agent.
+
+### Attack decision vs. attack application
+
+The attacker decides once per environment step, in `perturb()`, and publishes the decision
+as `attacker.last_targets = {handle: corruption_type}`. `MazeFlatlandDefender.act_and_step()`
+only *applies* that decision; it never calls `perturb()` again and never re-chooses. The
+perturbation reported for a step is the delta actually applied to the policy's own
+observation, returned by `act_and_step()`, not the TreeObs delta.
+
+An attacker that publishes `{}` corrupted nothing that step and nothing is applied. An
+attacker that publishes nothing at all (`None`) leaves the defender no choice but to
+corrupt every train, which is logged as a warning because it is not breadth-matched
+against targeted attackers.
 
 ---
 
