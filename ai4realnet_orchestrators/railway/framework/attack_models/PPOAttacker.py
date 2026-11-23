@@ -81,14 +81,23 @@ class PPOAttacker(BaseAttackerClass):
         seed: int = 42,
         model_name: str = "PPOAttacker",
         pickle_file: str = "ppo_attacker.pkl",
+        defender=None,
+        n_epochs: int = 4,
+        clip_range: float = 0.2,
     ):
-        super().__init__(name=model_name)
+        super().__init__(name=model_name, defender=defender)
         self.n_agents = n_agents
         self.obs_dim = obs_dim
         self.action_dim = n_attack_actions(n_agents)
         self.lr = lr
         self.gamma = gamma
         self.entropy_coef = entropy_coef
+        # Updates per trajectory, and the clip that makes more than one of them valid.
+        # Measured before this change: 186 reward calls but only 4 gradient updates over
+        # 5 episodes, because the update ran once per episode. The attacker therefore
+        # acted from a near-random initialisation and a better reward could not reach it.
+        self.n_epochs = int(n_epochs)
+        self.clip_range = float(clip_range)
         self.model_name = model_name
         self.pickle_file = pickle_file
 
@@ -129,7 +138,7 @@ class PPOAttacker(BaseAttackerClass):
         handle, ctype, severity = self._action_map[action_idx]
         self._publish_targets({handle: ctype}, {handle: severity})
         perturbed = corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype, severity)
-        reward = disruption_reward(obs_dict, perturbed)
+        reward = self._attack_reward(obs_dict, perturbed, ctype, severity)
 
         self._states.append(state)
         self._actions.append(action_idx)
@@ -169,21 +178,36 @@ class PPOAttacker(BaseAttackerClass):
         states = torch.FloatTensor(np.array(self._states))
         actions = torch.LongTensor(self._actions)
 
-        logits, values = self._net(states)
-        values = values.squeeze(1)
-        probs = F.softmax(logits, dim=-1)
-        log_probs = torch.log(probs.gather(1, actions.unsqueeze(1)).squeeze(1) + 1e-8)
-        entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=-1).mean()
+        # The behaviour policy's log-probabilities and the advantages are computed once
+        # and held fixed across the epochs below, which is what the importance ratio is
+        # measured against.
+        with torch.no_grad():
+            old_logits, old_values = self._net(states)
+            old_log_probs = torch.log(
+                F.softmax(old_logits, dim=-1)
+                .gather(1, actions.unsqueeze(1)).squeeze(1) + 1e-8)
+            advantages = returns - old_values.squeeze(1)
 
-        advantages = returns - values.detach()
-        actor_loss = -(log_probs * advantages).mean()
-        critic_loss = F.mse_loss(values, returns)
-        loss = actor_loss + 0.5 * critic_loss - self.entropy_coef * entropy
+        # Several gradient steps per trajectory instead of one. A plain policy-gradient
+        # loss would be wrong here, because after the first step the data no longer comes
+        # from the current policy; the clipped surrogate is what licenses the reuse.
+        for _ in range(self.n_epochs):
+            logits, values = self._net(states)
+            values = values.squeeze(1)
+            probs = F.softmax(logits, dim=-1)
+            log_probs = torch.log(probs.gather(1, actions.unsqueeze(1)).squeeze(1) + 1e-8)
+            entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=-1).mean()
 
-        self._optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self._net.parameters(), 0.5)
-        self._optimizer.step()
+            ratio = torch.exp(log_probs - old_log_probs)
+            clipped = torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range)
+            actor_loss = -torch.min(ratio * advantages, clipped * advantages).mean()
+            critic_loss = F.mse_loss(values, returns)
+            loss = actor_loss + 0.5 * critic_loss - self.entropy_coef * entropy
+
+            self._optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self._net.parameters(), 0.5)
+            self._optimizer.step()
 
     def save_model(self, path) -> None:
         if not _TORCH_AVAILABLE or self._net is None:

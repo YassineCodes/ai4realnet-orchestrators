@@ -16,7 +16,11 @@ The 12 root-level tree features per agent, in order:
   num_agents_ready_to_depart
 """
 
+import logging
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 NODE_FIELDS = [
     "dist_own_target_encountered",
@@ -126,6 +130,76 @@ def corrupt_obs_dict(obs_dict, handle, corruption_type, severity=1.0):
     if handle in new_obs and new_obs[handle] is not None:
         new_obs[handle] = corrupt_node(new_obs[handle], corruption_type, severity)
     return new_obs
+
+
+_WARNED_NO_QUERY = set()
+
+
+def query_disruption_reward(defender, obs_dict, ctype, severity, clean_probs=None):
+    """
+    Query-based attacker reward: how far a corruption moved the DEFENDER's decision.
+
+        reward = p_clean[a*] - p_corrupted[a*],   a* = arg max p_clean
+
+    i.e. how much confidence the policy loses in the action it wanted. This is power
+    grid's attacker objective, which minimises the probability assigned to the preferred
+    action, expressed for this domain.
+
+    WHY THIS REPLACES disruption_reward()
+    -------------------------------------
+    disruption_reward() compares two TreeObs dicts and never consults the policy. It pays
+    for making three hand-picked fields look worse, whether or not the agent's decision
+    changes at all, and in this domain the policy does not even read the TreeObs: it reads
+    the maze observation, so a perturbation scored there cannot reach it. Measured
+    consequence: the share of an attacker's choices falling in the class the surrogate
+    pays for but the policy ignores predicted measured effectiveness at Pearson -0.980,
+    so the surrogate and not the algorithm explained the whole attacker ranking. Three of
+    the four attackers that used it scored significantly WORSE than random noise.
+
+    WHY A PROBABILITY AND NOT AN ACTION CHANGE
+    ------------------------------------------
+    Two reasons. One train acts per step, so "did the action change" is a single bit per
+    step and a learned attacker cannot descend it. And KPI-FF-070 and KPI-SF-071 measure
+    action change, so rewarding it would make the attacker optimise the metric it is
+    being scored by. A probability drop is dense and is not one of the ten KPIs.
+
+    THREAT MODEL
+    ------------
+    This makes the attacker query-based rather than black-box: it asks the defender what
+    it would do. That is a declared adaptation, and it is the model GEPerturb already
+    uses, which is the one attacker in this suite that beats the random baseline.
+
+    Returns:
+        float reward, or None when the defender cannot be queried. None means "no
+        signal" and the caller must fall back, never read it as "no disruption".
+    """
+    probs_fn = getattr(defender, "action_probs", None)
+    corrupt_fn = getattr(defender, "action_probs_with_corruption", None)
+    if probs_fn is None or corrupt_fn is None:
+        return None
+
+    if clean_probs is None:
+        clean_probs = probs_fn(obs_dict)
+    if clean_probs is None:
+        return None
+
+    corrupted = corrupt_fn(obs_dict, ctype, severity)
+    if corrupted is None or len(corrupted) != len(clean_probs):
+        return None
+
+    preferred = int(np.argmax(clean_probs))
+    return float(clean_probs[preferred] - corrupted[preferred])
+
+
+def warn_black_box_fallback(name):
+    """Say once, per attacker, that it is scoring without querying the defender."""
+    if name not in _WARNED_NO_QUERY:
+        _WARNED_NO_QUERY.add(name)
+        logger.warning(
+            "%s has no queryable defender, so it is falling back to the observation-only "
+            "disruption_reward(). That surrogate is what made the learned attackers score "
+            "worse than random noise; the resulting KPI values are not comparable with a "
+            "query-based run.", name)
 
 
 def disruption_reward(obs_before, obs_after):

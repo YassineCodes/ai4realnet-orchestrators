@@ -69,8 +69,9 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
         gamma: float = 0.99,
         seed: int = 42,
         name: str = "LambdaPIRPerturbationAgent",
+        defender=None,
     ):
-        super().__init__(name=name, seed=seed)
+        super().__init__(name=name, seed=seed, defender=defender)
         self.n_agents = n_agents
         self.lambda_param = lambda_param
         self.initial_prob_policy = initial_prob_policy
@@ -131,7 +132,7 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
             self.last_severity = _s
 
             # Immediate reward
-            reward = disruption_reward(obs_dict, obs_perturbed)
+            reward = self._attack_reward(obs_dict, obs_perturbed, _c, _s)
 
             # Store for next Bellman update
             self.prev_obs = copy.deepcopy(obs_dict)

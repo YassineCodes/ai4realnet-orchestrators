@@ -34,8 +34,11 @@ class BaseAttackerClass(BaseAgent):
     attackers -- that the learned selection is discarded at the point of use.
     """
 
-    def __init__(self, name=""):
+    def __init__(self, name="", defender=None):
         super().__init__(name)
+        # The defender this attacker may query when scoring its own choices. None keeps
+        # the black-box behaviour, which measurably does not work; see _attack_reward.
+        self.defender = defender
         self.last_handle = None
         self.last_ctype = None
         # {handle: ctype} actually corrupted by the most recent perturb() call;
@@ -44,6 +47,31 @@ class BaseAttackerClass(BaseAgent):
         # {handle: severity} for the same call; a missing handle means severity 1.0.
         self.last_severities = {}
         self.last_severity = 1.0
+
+    def _attack_reward(self, obs_dict, perturbed, ctype, severity):
+        """
+        Reward for the perturbation this agent just chose.
+
+        Query-based when a defender is available: how much confidence the policy loses in
+        the action it preferred, which is power grid's attacker objective. Otherwise the
+        observation-only surrogate, with one warning, because that surrogate is why these
+        attackers scored worse than random noise.
+
+        A None from the query path means the defender could not answer, not that the
+        corruption did nothing, so it falls back rather than reporting zero disruption.
+        """
+        from perturbation_agents.utils import (
+            disruption_reward,
+            query_disruption_reward,
+            warn_black_box_fallback,
+        )
+
+        if self.defender is not None:
+            reward = query_disruption_reward(self.defender, obs_dict, ctype, severity)
+            if reward is not None:
+                return reward
+        warn_black_box_fallback(self.name)
+        return disruption_reward(obs_dict, perturbed)
 
     def load(self, path):
         pass

@@ -104,8 +104,9 @@ class RLPerturbationAgent(BasePerturbationAgent):
         buffer_size: int = 10_000,
         target_update_freq: int = 500,
         seed: int = 42,
+        defender=None,
     ):
-        super().__init__(name="RLPerturbationAgent", seed=seed)
+        super().__init__(name="RLPerturbationAgent", seed=seed, defender=defender)
 
         if not _TORCH_AVAILABLE:
             logger.warning("PyTorch not installed — RLPerturbationAgent will act randomly.")
@@ -165,7 +166,7 @@ class RLPerturbationAgent(BasePerturbationAgent):
         perturbed = corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype, severity)
 
         # Compute reward and store transition (no next_state yet — deferred)
-        reward = disruption_reward(obs_dict, perturbed)
+        reward = self._attack_reward(obs_dict, perturbed, ctype, severity)
         if self._prev_state is not None and self._prev_action is not None:
             self._buffer.append((self._prev_state, self._prev_action, reward, state, False))
             self._train()

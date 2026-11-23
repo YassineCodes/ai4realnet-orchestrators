@@ -54,6 +54,7 @@ class LambdaPIRAttacker(BaseAttackerClass):
         gamma: float = 0.99,
         name: str = "LambdaPIRAttacker",
         seed: int = 42,
+        defender=None,
     ):
         try:
             self.model_name = name
@@ -70,8 +71,9 @@ class LambdaPIRAttacker(BaseAttackerClass):
                 gamma=gamma,
                 seed=seed,
                 name=name,
+                defender=defender,
             )
-            super().__init__(name=name)
+            super().__init__(name=name, defender=defender)
             logger.info(f"{name} initialized (gamma={gamma}, n_agents={n_agents})")
 
         except Exception as e:

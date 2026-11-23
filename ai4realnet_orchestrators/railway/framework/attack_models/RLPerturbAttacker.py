@@ -44,6 +44,7 @@ class RLPerturbAttacker(BaseAttackerClass):
         epsilon: float = 1.0,
         gamma: float = 0.99,
         seed: int = 42,
+        defender=None,
     ):
         try:
             self.n_agents = n_agents
@@ -53,10 +54,11 @@ class RLPerturbAttacker(BaseAttackerClass):
                 epsilon=epsilon,
                 gamma=gamma,
                 seed=seed,
+                defender=defender,
             )
             if model_path is not None:
                 self.model.load_model(model_path)
-            super().__init__(name=self.model_name)
+            super().__init__(name=self.model_name, defender=defender)
             logger.info(f"{self.model_name} initialized (n_agents={n_agents})")
         except Exception as e:
             logger.error(f"{self.model_name} init failed: {e}\n{traceback.format_exc()}")

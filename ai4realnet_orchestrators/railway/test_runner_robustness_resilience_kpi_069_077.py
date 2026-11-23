@@ -728,6 +728,7 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
             try:
                 if attacker_type == "SAC":
                     attacker = SACAttacker(
+                        defender=self._defender_agent,
                         n_agents=n_agents,
                         gamma=0.99,
                         alpha=0.2,
@@ -735,6 +736,7 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
                     )
                 elif attacker_type == "PPO":
                     attacker = PPOAttacker(
+                        defender=self._defender_agent,
                         n_agents=n_agents,
                         gamma=0.99,
                         entropy_coef=0.05,
@@ -742,6 +744,7 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
                     )
                 elif attacker_type == "RLPerturb":
                     attacker = RLPerturbAttacker(
+                        defender=self._defender_agent,
                         n_agents=n_agents,
                         epsilon=1.0,
                         gamma=0.99,
@@ -764,6 +767,7 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
                     )
                 elif attacker_type == "LambdaPIR":
                     attacker = LambdaPIRAttacker(
+                        defender=self._defender_agent,
                         n_agents=n_agents,
                         lambda_param=0.7,
                         initial_prob_policy=0.2,

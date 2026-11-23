@@ -94,8 +94,9 @@ class SACAttacker(BaseAttackerClass):
         seed: int = 42,
         model_name: str = "SACAttacker",
         pickle_file: str = "sac_attacker.pkl",
+        defender=None,
     ):
-        super().__init__(name=model_name)
+        super().__init__(name=model_name, defender=defender)
         self.n_agents = n_agents
         self.obs_dim = obs_dim
         self.action_dim = n_attack_actions(n_agents)
@@ -150,7 +151,7 @@ class SACAttacker(BaseAttackerClass):
         handle, ctype, severity = self._action_map[action_idx]
         self._publish_targets({handle: ctype}, {handle: severity})
         perturbed = corrupt_obs_dict(copy.deepcopy(obs_dict), handle, ctype, severity)
-        reward = disruption_reward(obs_dict, perturbed)
+        reward = self._attack_reward(obs_dict, perturbed, ctype, severity)
 
         if self._prev_state is not None and self._prev_action is not None:
             self._buffer.append((self._prev_state, self._prev_action, reward, state, False))

@@ -963,6 +963,71 @@ class MazeFlatlandDefender(RailwayDefender):
             return self.act(obs_dict)
         return self._query(obs_dict, policy_obs)
 
+    def action_probs(self, obs_dict: dict) -> Optional[np.ndarray]:
+        """
+        The policy's action probabilities on the CLEAN observation. No side effects.
+
+        Exists so that a learned attacker can be rewarded by how much it moved the
+        defender, rather than by how much it moved three hand-picked fields of an
+        observation the policy never reads. See utils.query_disruption_reward.
+
+        Returns:
+            The probability vector over the acting train's actions, or None when the
+            policy cannot be queried. None means "no signal", and the caller must not
+            read it as "no disruption".
+        """
+        if self._maze_obs is None:
+            return None
+        return self._probs(self._maze_obs)
+
+    def action_probs_with_corruption(self, obs_dict: dict, ctype: str,
+                                     severity: float = 1.0) -> Optional[np.ndarray]:
+        """
+        The policy's action probabilities under a candidate corruption. No side effects.
+
+        Mirrors act_with_corruption(), and for the same reason: the corruption has to be
+        applied to the maze observation, because that is the one the policy reads.
+        """
+        if self._maze_obs is None:
+            return None
+        try:
+            policy_obs, _delta = self._apply_vector_attack(self._maze_obs, ctype, severity)
+        except Exception as e:
+            logger.warning("action_probs_with_corruption: could not apply %r: %s", ctype, e)
+            return None
+        return self._probs(policy_obs)
+
+    def _probs(self, policy_obs: dict) -> Optional[np.ndarray]:
+        """
+        Softmax over the policy's train_move logits for a given maze observation.
+
+        Uses compute_substep_policy_output rather than compute_action, because the
+        attacker needs the distribution and not the arg-max: one train acts per step, so
+        an arg-max signal is a single bit and a learned attacker cannot descend it.
+        """
+        try:
+            if "train_move_mask" not in policy_obs:
+                raise RuntimeError(
+                    "maze observation is missing 'train_move_mask'; refusing to "
+                    "substitute an all-permissive mask"
+                )
+            actor_id = self._maze_env.actor_id()
+            out = self._policy.compute_substep_policy_output(
+                observation=policy_obs, actor_id=actor_id)
+            logits = out.action_logits["train_move"]
+            z = np.asarray(logits.detach().cpu().reshape(-1), dtype=np.float64)
+            z = z - z.max()                      # softmax, shifted for stability
+            e = np.exp(z)
+            total = e.sum()
+            if not np.isfinite(total) or total <= 0.0:
+                return None
+            return e / total
+        except RecursionError:
+            raise
+        except Exception as e:
+            logger.warning("MazeFlatlandDefender._probs() failed: %s", e)
+            return None
+
     def _query(self, obs_dict: dict, policy_obs: dict) -> dict:
         """Policy query on a given maze observation, without touching the env."""
         try:
