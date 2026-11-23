@@ -384,3 +384,7 @@ class TestRunner_KPI_RF_076_Power_Grid(RobustnessResilienceTestRunner):
 class TestRunner_KPI_SF_077_Power_Grid(RobustnessResilienceTestRunner):
     """KPI-SF-077: Similarity state to unperturbed situation"""
     pass
+
+class TestRunner_KPI_RF_078_Power_Grid(RobustnessResilienceTestRunner):
+    """KPI-SF-078: Reward per action"""
+    pass
