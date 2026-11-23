@@ -28,8 +28,8 @@ This module implements **10 KPIs** for evaluating AI agent robustness and resili
 | KPI ID | UUID | Metric | Description |
 |--------|------|--------|-------------|
 | KPI-AF-074 | `707a1a4e-7073-432b-94fc-af4a5ee9f07d` | `area_between_curves` | Integrated performance degradation |
-| KPI-DF-075 | `2c4be118-6108-43b3-b09f-a4bee842167a` | `degradation_time` | Time until performance degrades |
-| KPI-RF-076 | `2cac54e0-aaf3-4f22-8307-f23878c432f0` | `restoration_time` | Time to restore performance |
+| KPI-DF-075 | `2c4be118-6108-43b3-b09f-a4bee842167a` | `degradation_time` | Time until performance degrades. Computed as the span from the performance gap opening to its widest point, and 0 when no gap ever opens, so a higher value is a longer and deeper degradation |
+| KPI-RF-076 | `2cac54e0-aaf3-4f22-8307-f23878c432f0` | `restoration_time` | Time to restore performance. Computed as the span from the widest point until the gap closes, censored at the episode end when it never closes |
 | KPI-SF-077 | `d432299f-dbee-46ba-9e15-77954086440a` | `state_similarity` | Cosine similarity to unperturbed states [-1 to 1] |
 
 ---
@@ -49,7 +49,109 @@ The evaluation runs the defender agent against **6 different attacker types**:
 
 Unlike the power grid domain, the railway attackers train from scratch during the evaluation, so no `trained_models/` folder is required.
 
+**Two differences from the power grid suite, both of which limit a cross-domain
+comparison of a single attacker.** First, provenance: power grid ships pre-trained
+attacker checkpoints, so an attacker of a given name there has seen that domain before
+the decisive episodes and here it has not. Second, composition: power grid and ATM run
+seven attackers, splitting the soft actor-critic adversary into `SAC_5` and `SAC_10` at
+two budgets, while railway runs one `SAC`, because the railway budget is relative rather
+than absolute and the two variants would not differ in the way they do there.
+
+The railway attack space is also semantic rather than additive: an action is
+`(train handle, corruption type, severity)`, because the effective axis of attack in this
+observation is which claim is made about which train and how extreme it is, not Gaussian
+noise on a scalar. That space is what made the one significant result here possible, so
+it is a deliberate divergence from the power-grid noise model rather than a gap. The
+suite-level aggregate and the random baseline remain comparable; a single learned
+attacker's value is not.
+
 ### Measured results
+
+#### Current: 200 episodes on the seeded pipeline
+
+The aggregate the orchestrator returns per KPI, 200 episodes per attacker against
+`framework/agent.zip`, with every correction in this document in place and the attacker
+generators seeded. The unperturbed baseline took 5115 decision points over the 200
+episodes.
+
+| KPI | value |
+|-----|------:|
+| KPI-VF-073 Vulnerability to perturbation | 0.1053 |
+| KPI-SF-072 Steps survived with perturbations | 31.5800 |
+| KPI-SF-071 Severity of changed output | 0.7456 |
+| KPI-DF-069 Drop-off in reward | 0.1988 |
+| KPI-FF-070 Frequency changed output | 0.4087 |
+| KPI-AF-074 Area between performance curves | 3472.4586 |
+| KPI-DF-075 Degradation time (timesteps) | 4.3300 |
+| KPI-RF-076 Restorative time (timesteps) | 1.2400 |
+| KPI-SF-077 Similarity to unperturbed state | 0.9558 |
+| KPI-RF-078 Reward per action | 0.4997 |
+
+Decision points per attacker over the 200 episodes, against the baseline's 5115:
+GEPerturb 5927, LambdaPIR 6407, Random 6112, PPO 6310, SAC 7417, RLPerturb 5723.
+
+Against the earlier unseeded run the values move as predicted: KPI-SF-071 from 0.3383 to
+0.7456 and KPI-RF-078 from 0.6220 to 0.4997 because the placeholder actions they counted
+are gone, and KPI-DF-075 and KPI-RF-076 roughly double because they are now reported in
+timesteps rather than decision points. KPI-VF-073, KPI-AF-074 and KPI-SF-077 are
+unchanged within rounding.
+
+#### Per attacker, 200 episodes, query-based attacker reward
+
+Measured 2026-11-23 with `--save-dir`, so the per-episode archives survive. Episodes
+0..199, the same seeds for every attacker, so the rows are paired. All ten KPIs per
+attacker:
+
+| attacker | VF-073 | SF-072 | SF-071 | DF-069 | FF-070 | AF-074 | DF-075 | RF-076 | SF-077 | RF-078 |
+|----------|-------:|-------:|-------:|-------:|-------:|-------:|-------:|-------:|-------:|-------:|
+| SAC | 0.0036 | 36.045 | **0.7840** | 0.0000 | **0.7661** | 2690.0 | 4.230 | 0.850 | **0.9410** | 0.5105 |
+| PPO | 0.0170 | 34.940 | 0.7647 | 0.0000 | 0.5331 | 2558.6 | 3.275 | 1.050 | 0.9598 | 0.4520 |
+| LambdaPIR | 0.0089 | 35.755 | 0.7627 | 0.5474 | 0.5054 | 2913.1 | 3.985 | 1.260 | 0.9493 | **0.3905** |
+| GEPerturb | 0.2530 | 29.635 | 0.7464 | 0.8537 | 0.4184 | **4900.0** | 5.490 | **1.485** | 0.9441 | 0.4193 |
+| Random (the bar) | **0.3040** | 30.560 | 0.7549 | 0.1173 | 0.3395 | 4905.5 | **6.090** | 1.380 | 0.9450 | 0.4329 |
+| RLPerturb | 0.0508 | 27.220 | 0.7335 | **0.9645** | 0.1539 | 2794.2 | 3.630 | 1.000 | 0.9661 | 0.7266 |
+| **suite aggregate** | 0.1062 | 32.3592 | 0.7577 | 0.4138 | 0.4527 | 3460.2 | 4.4500 | 1.1708 | 0.9509 | 0.4886 |
+
+Bold marks the worst case the agent faces in each column. The aggregate is the mean over
+the six attackers; that rule was checked against the full run's own output, which
+reproduces to four decimals.
+
+Ranked by actions changed, against the same episodes measured with the previous
+observation-only reward:
+
+| attacker | before | after | change |
+|----------|-------:|------:|-------:|
+| SAC | 0.0348 | **0.7661** | 22x |
+| PPO | 0.2193 | **0.5331** | 2.4x |
+| LambdaPIR | 0.4130 | **0.5054** | +22% |
+| GEPerturb | 0.4184 | 0.4184 | unchanged |
+| Random (the bar) | 0.3395 | 0.3395 | unchanged |
+| RLPerturb | 0.2319 | 0.1539 | -34% |
+
+**Four attackers now exceed the random baseline where one did before.** GEPerturb and
+Random are unchanged to four decimals, which is the control for this measurement:
+GEPerturb was already query-based and Random does not learn, so neither consumes the
+reward that changed. Had the change moved the measurement rather than the attackers,
+those two rows would have moved as well.
+
+RLPerturb is the one row that falls, and the fall is the removal of an artefact rather
+than a loss of capability. Measured on identical inputs, the previous reward had mean
+6,714,195 and maximum 99,999,600 against the query reward's 0.2755, and 99.4% of it came
+from a single term, `(dist_min_to_target_after - before) * 0.1`, while the conflict term
+contributed 0.0%. The previous reward therefore paid an attacker for writing the largest
+number it could into a distance field, which measures absent input validation rather than
+robustness. RLPerturb was the attacker most dependent on that.
+
+Operational damage over the same episodes, area under the arrivals gap per 1000 steps:
+SAC 57.13, GEPerturb 54.18, Random 52.70, LambdaPIR 48.43, RLPerturb 33.31, PPO 21.16.
+
+Phase timings: unperturbed 131.5s, GEPerturb 419.3s, LambdaPIR 215.7s, Random 151.0s,
+PPO 220.6s, SAC 309.2s, RLPerturb 219.7s.
+
+The unseeded per-attacker table is kept below for comparison and is explicitly
+superseded.
+
+#### Superseded: the unseeded 200-episode run
 
 200 episodes against the bundled reference agent (`framework/agent.zip`). Every attacker
 is evaluated on the same scenarios (`env.reset(seed=ep)` for `ep` in `0..199`), so the
@@ -60,6 +162,13 @@ These numbers are from the pipeline with all four fixes in place: the attack dec
 made once and recorded as applied, corruption types resolve against the observation the
 policy reads, the action space carries a severity axis, and the query-based attacker
 scores candidates against that same observation.
+
+> **Superseded on two counts; keep it only for the attacker ranking.** It was measured
+> before the action comparison was restricted to queried trains, before the resilience
+> curves were aligned on environment time, and before the attacker generators were
+> seeded, so its values are neither current nor reproducible. The *ranking* is the part
+> worth keeping: every correction applies equally to each attacker and to the baseline,
+> and the aggregates above move exactly as predicted from the ranking here.
 
 All ten KPIs, per attacker:
 
@@ -406,7 +515,110 @@ observation, returned by `act_and_step()`, not the TreeObs delta.
 An attacker that publishes `{}` corrupted nothing that step and nothing is applied. An
 attacker that publishes nothing at all (`None`) leaves the defender no choice but to
 corrupt every train, which is logged as a warning because it is not breadth-matched
-against targeted attackers.
+against targeted attackers. The same warning covers the case where `perturb()` raised
+and no target was published: the fallback is deliberate and logged, never silent.
+
+A failed `maze_env.reset()` now raises. Previously it left the maze observation at
+`None`, `act_and_step()` broke out of its loop on the first sub-step, and the episode
+completed with no actions and no perturbations -- a run that looked short but valid. The
+rest of this path already fails loudly (a missing action mask, a perturbation that was
+not applied), and a failed reset has to as well.
+
+### One recorded step is a decision point, not a timestep
+
+`SubStepSkippingWrapper` keeps skipping trains that have a single legal option, and it
+keeps doing so across `RailEnv` steps, because `LogicMaskBuilder` only offers a choice
+before crossings and merges. One framework step therefore covers however many timesteps
+pass until some train actually has a decision to make -- which is why
+`n_steps_survived` is around 29 on a scenario whose episodes are much longer.
+
+Measured on the reference agent over the first eight seeds, unperturbed, the compression
+is both large and uneven:
+
+| seed | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|------|---|---|---|---|---|---|---|---|
+| decision points | 26 | 22 | 19 | 40 | 24 | 32 | 18 | 22 |
+| env timesteps | 44 | 53 | 24 | 44 | 49 | 44 | 53 | 39 |
+| timesteps per decision | 1.69 | 2.41 | 1.26 | 1.10 | 2.04 | 1.38 | 2.94 | 1.77 |
+
+The ratio ranges from 1.10 to 2.94 across episodes of the same scenario, so decision
+index *i* is not a fixed point in time even before an attack changes anything.
+
+Two consequences, both now handled rather than documented away:
+
+- **The number of timesteps per decision point differs between the baseline and the
+  perturbed run** as soon as the two trajectories diverge. Comparing the arrival curves
+  by step index then subtracts values taken at different environment times, and reports
+  KPI-DF-075 and KPI-RF-076 in decision points rather than in timesteps.
+  `FlatlandEnvironment` now records `rail._elapsed_steps` per step, `result_getter`
+  stores it as the `env_time` series, and
+  `metrics.get_resilience_metrics_performance_single_ep()` forward-fills both curves
+  onto a common grid of environment timesteps before measuring the gap. The fill carries
+  the last *completed* decision forward; reading the next one back instead would credit
+  an arrival to the timesteps before it happened. Pickles without the series fall back
+  to the index-based comparison, which is the previous behaviour.
+- **A skipped train has no action of its own.** Only queried trains reach
+  `compute_action()`, yet `_flatten_actions()` has to emit a fixed-length vector, so a
+  skipped or finished train carried a `DO_NOTHING` placeholder. Identical in both
+  rollouts, that placeholder counted as agreement in `get_similarity_score` and as "no
+  action" in `n_actions` / `reward_per_action`. The defender now reports
+  `last_queried_handles`, the environment turns it into `last_queried_mask`, and the
+  robustness metrics restrict both the comparison and the action count to those trains.
+  KPI-RF-078 therefore counts decisions actually taken, not slots in a vector. The
+  effect is not cosmetic: on a short run KPI-SF-071 moves from a saturated 0.3333 to
+  0.7325, because the placeholders were supplying guaranteed agreement.
+  A mask that is missing, mis-shaped or all-false falls back to the full vector, so a
+  recording defect cannot silently shrink the comparison to nothing.
+
+### The evaluation was not reproducible, and now is
+
+Every attacker took a `seed` and used it for a numpy `RandomState`. **Nothing seeded
+torch**, and the learned attackers build torch networks: their weight initialisation, and
+any torch-side sampling, came from torch's global unseeded generator. So a reported KPI
+could not be re-derived, and a difference between two runs could not be told apart from a
+difference between two agents.
+
+Measured, not suspected. Two consecutive 4-episode runs, same code, same arguments, same
+environment seeds, before the fix:
+
+| KPI | run 1 | run 2 |
+|-----|------:|------:|
+| SF-072 steps survived | 27.8750 | 27.2083 |
+| SF-071 severity | 0.7057 | 0.7008 |
+| FF-070 frequency changed | 0.2649 | 0.2026 |
+| AF-074 area | 1293.89 | 1256.66 |
+| RF-078 reward per action | 0.7178 | 0.7771 |
+
+Nine of the ten differed; KPI-FF-070 by 24%.
+`perturbation_agents/determinism.py` seeds torch (CPU and CUDA), numpy's global
+generator and Python's `random`, and the runner calls it immediately before constructing
+each attacker with that attacker's own declared seed -- so an attacker's draws depend on
+its seed alone and not on how many were built before it. After the fix the same two runs
+are **bit-identical on all ten KPIs**.
+
+The paired significance tests were never invalid: within one run every attacker and the
+baseline still traverse the same episode seeds, which is what the pairing needs. What was
+invalid was quoting a KPI *value* as a property of the agent.
+
+### What the learning attackers actually optimise
+
+`SAC`, `PPO` and `RLPerturb` are rewarded by `disruption_reward()`, computed on the
+TreeObs and **independent of how the defender responds**. Their `perturb_vector()` also
+pads or truncates the maze observation to the width the networks were sized for, which
+is the TreeObs width. Against the maze defender they are therefore choosing a corruption
+type and a severity, not learning to attack this policy: nothing in their learning
+signal tells them what the policy did.
+
+This is the whole of the remaining gap, and it is measurable. The share of an attacker's
+choices that fall in the class the surrogate pays for but the policy ignores predicts its
+measured effectiveness at Pearson -0.980. `GEPerturb`, the one attacker that scores its
+candidates by asking the defender what it would actually do, is also the only one that
+beats the random baseline.
+
+Aligning the surrogate with the policy's measured response is a small change -- 
+`act_with_corruption()` already provides the primitive -- but it turns those three
+attackers from black-box into query-based, which is a change of threat model rather than
+a bug fix. It is left as an open decision rather than applied silently.
 
 ---
 
@@ -455,10 +667,17 @@ railway/
     │   ├── RLPerturbAttacker.py
     │   └── SACAttacker.py
     ├── perturbation_agents/                          # Perturbation strategies
+    │   ├── attack_space.py                           # the (handle, type, severity) space, enumerated once
+    │   ├── maze_obs_layout.py                        # corruption type -> maze observation fields
+    │   └── utils.py                                  # corruption primitives, clip_to_budget
     ├── evaluation_framework/                         # Metrics computation
     │   ├── metrics.py
     │   ├── plots_and_tables.py
-    │   └── result_getter.py
+    │   ├── result_getter.py
+    │   ├── test_attack_application.py                # the applied attack reaches the policy
+    │   ├── test_attack_severity.py                   # severity axis and budget clipping
+    │   ├── test_reward_per_action.py                 # KPI-RF-078
+    │   └── test_step_alignment.py                    # env-time alignment, queried-train masking
     └── utility/                                      # HTML report helpers
 ```
 
@@ -524,9 +743,35 @@ python run_local_robustness_resilience_kpi_069_077.py --kpi KPI-FF-070 --episode
 
 # Your own submission
 python run_local_robustness_resilience_kpi_069_077.py --agent path/to/agent.pkl --all
+
+# KEEP the per-episode artefacts: pass --save-dir for any run whose numbers
+# someone will later want to check or recompute
+python run_local_robustness_resilience_kpi_069_077.py --agent framework/agent.zip \
+    --episodes 200 --all --save-dir results/railway_200ep
 ```
 
 A 50-episode run against the reference agent takes roughly 5 minutes, followed by the per-episode plots (`episodes x attackers x 2` SVG files), which dominate the wall time.
+
+**`--save-dir` is not optional for a reported result.** Without it the runner writes the
+per-attacker archives, the plots and the HTML report to a temporary directory and deletes
+all of it on exit, so only the printed KPI values survive. That is the right default for a
+FAB submission, where the orchestrator returns one value and keeps nothing, and the wrong
+one for a campaign: the archives hold the per-episode performance curves, the
+action-change series and the realised perturbations, which is what lets a KPI be
+recomputed and audited without re-running the evaluation.
+
+It also makes a campaign **restartable**. Each phase, the unperturbed baseline and then
+one per attacker, writes its own archive, and a phase whose archive is already present is
+loaded rather than re-run, so a run that dies partway resumes at the phase it was in and
+loses at most that one phase. Over a suite that takes hours this is the difference between
+losing an afternoon and losing twenty minutes.
+
+The archive is reused only when it holds the episode count the new run asks for; a
+mismatch re-runs that phase and reports it as `[REDO]`. Without that check a directory
+left from a 50-episode run would be reused by a 200-episode run and the KPIs would come
+from a baseline of one length against perturbed phases of another, with nothing saying so.
+**The check is on length, not on identity: a directory holding a different agent's
+archives would still be reused.** Use a fresh directory per agent.
 
 ### Via the orchestrator
 
@@ -553,8 +798,8 @@ result = run_scenario(
 | `reward_drop_percent` | Low (0%) | High (100%) | Lower = maintains performance |
 | `action_change_freq` | Low (0.0) | High (1.0) | Lower = more consistent |
 | `area_between_curves` | Low | High | Lower = faster recovery |
-| `degradation_time` | High | Low | Higher = slower degradation |
-| `restoration_time` | Low | High | Lower = faster recovery |
+| `degradation_time` | Low (0) | High | Span from the gap opening to its widest point; 0 means the agent never fell behind, so lower = more resilient |
+| `restoration_time` | Low (0) | High | Span from the widest point until the gap closes, censored at the episode end; lower = faster recovery |
 | `state_similarity` | High (1.0) | Low (-1.0) | Higher = maintains state |
 | `reward_per_action_ratio` | High (1.0) | Low (0.0) | Higher = value per intervention preserved |
 

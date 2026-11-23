@@ -70,6 +70,23 @@ class metrics:
         performance_perturbed = data_dict_perturbed.get("performance", None)
         performance_unperturbed = data_dict_unperturbed.get("performance", None)
 
+        # Per-step boolean mask over agent handles: was this agent's policy queried at
+        # this step. With maze-flatland's SubStepSkippingWrapper a train with a single
+        # legal option is never asked, and a finished train is never asked either, so
+        # its slot in the action vector carries a placeholder rather than a decision.
+        # Absent in older pickles -> every agent is treated as queried, which is the
+        # previous behaviour and is correct for every single-agent domain.
+        queried_perturbed = data_dict_perturbed.get("queried", None)
+        queried_unperturbed = data_dict_unperturbed.get("queried", None)
+
+        # Per-step environment clock (RailEnv._elapsed_steps). One recorded step is one
+        # decision point and may span several timesteps, by a different amount in the
+        # baseline and the perturbed run, so the resilience curves are aligned on this
+        # before being compared. Absent in older pickles -> decision index is used,
+        # which is the previous behaviour.
+        env_time_perturbed = data_dict_perturbed.get("env_time", None)
+        env_time_unperturbed = data_dict_unperturbed.get("env_time", None)
+
         self.similarity_score_fn = similarity_score_fn
         self.recovery_action_fn = recovery_action_fn
         self.model_name = model_name
@@ -83,12 +100,18 @@ class metrics:
                             rewards_unperturbed, rewards_perturbed, do_nothing_action,
                             actions_baseline=actions_baseline,
                             performance_perturbed=performance_perturbed,
-                            performance_unperturbed=performance_unperturbed)
+                            performance_unperturbed=performance_unperturbed,
+                            queried_perturbed=queried_perturbed,
+                            queried_unperturbed=queried_unperturbed,
+                            env_time_perturbed=env_time_perturbed,
+                            env_time_unperturbed=env_time_unperturbed)
 
 
-    def compute_metrics(self, obs_unperturb, obs_perturb, perturbations, actions_unperturbed, actions_perturbed, rewards_unperturbed, 
+    def compute_metrics(self, obs_unperturb, obs_perturb, perturbations, actions_unperturbed, actions_perturbed, rewards_unperturbed,
             rewards_perturbed, do_nothing_action, actions_baseline=None,
-            performance_perturbed=None, performance_unperturbed=None):
+            performance_perturbed=None, performance_unperturbed=None,
+            queried_perturbed=None, queried_unperturbed=None,
+            env_time_perturbed=None, env_time_unperturbed=None):
         # initialize lists to store metrics
         metrics_robustness, metrics_resilience, metrics_resilience_obs_sim = [[] for _ in range(3)]
 
@@ -117,22 +140,26 @@ class metrics:
                     distance_peaks=500, distance_valleys=500
                 )
             # compute robustness metrics and similarity in observation
-            cos_similarity, euclidean_dist, actions_changed, similarity_score, n_actions = self.get_robustness_metrics_single_ep(obs_unperturb[ep], obs_perturb[ep], actions_unperturbed[ep], actions_perturbed[ep], do_nothing_action)
+            ep_queried = (queried_perturbed[ep]
+                          if queried_perturbed is not None and ep < len(queried_perturbed) else None)
+            cos_similarity, euclidean_dist, actions_changed, similarity_score, n_actions = self.get_robustness_metrics_single_ep(obs_unperturb[ep], obs_perturb[ep], actions_unperturbed[ep], actions_perturbed[ep], do_nothing_action, queried=ep_queried)
             r = [x for x in rewards_perturbed[ep] if not isna(x)]
             # ---- KPI-RF-078: reward per action (perturbed rollout) ----
             perf_p = (performance_perturbed[ep]
                       if performance_perturbed is not None and ep < len(performance_perturbed) else None)
             rpa = self.get_reward_per_action_single_ep(
                 actions_perturbed[ep], rewards_perturbed[ep], do_nothing_action,
-                performance=perf_p
+                performance=perf_p, queried=ep_queried
             )
             # ---- KPI-RF-078: same measurement on the unperturbed baseline rollout ----
             if actions_baseline is not None and ep < len(actions_baseline):
                 perf_u = (performance_unperturbed[ep]
                           if performance_unperturbed is not None and ep < len(performance_unperturbed) else None)
+                q_u = (queried_unperturbed[ep]
+                       if queried_unperturbed is not None and ep < len(queried_unperturbed) else None)
                 rpa_base = self.get_reward_per_action_single_ep(
                     actions_baseline[ep], rewards_unperturbed[ep], do_nothing_action,
-                    performance=perf_u
+                    performance=perf_u, queried=q_u
                 )
             else:
                 rpa_base = {"n_actions": np.nan, "n_actions_excl_recovery": np.nan,
@@ -171,8 +198,13 @@ class metrics:
             if (performance_perturbed is not None and performance_unperturbed is not None
                     and ep < len(performance_perturbed) and ep < len(performance_unperturbed)
                     and len(performance_perturbed[ep]) > 0):
+                t_p = (env_time_perturbed[ep]
+                       if env_time_perturbed is not None and ep < len(env_time_perturbed) else None)
+                t_u = (env_time_unperturbed[ep]
+                       if env_time_unperturbed is not None and ep < len(env_time_unperturbed) else None)
                 results_resilience = self.get_resilience_metrics_performance_single_ep(
-                    performance_unperturbed[ep], performance_perturbed[ep])
+                    performance_unperturbed[ep], performance_perturbed[ep],
+                    env_time_unperturbed=t_u, env_time_perturbed=t_p)
             else:
                 results_resilience = self.get_resilience_metrics_single_ep(rewards_unperturbed[ep], rewards_perturbed[ep], distance_peaks=dist, distance_valleys=dist)
             results_resilience = [ep] + [np.mean(r) if len(r) > 0 else 0 for r in results_resilience] + [len(results_resilience[0])]
@@ -214,7 +246,7 @@ class metrics:
 
         return metrics_robustness, metrics_resilience, metrics_resilience_obs_sim, perturb_vulnerability
 
-    def get_reward_per_action_single_ep(self, actions, rewards, do_nothing_action, performance=None):
+    def get_reward_per_action_single_ep(self, actions, rewards, do_nothing_action, performance=None, queried=None):
         """
         Computes KPI-RF-078 (reward per action) for a single episode.
 
@@ -270,6 +302,10 @@ class metrics:
             performance (list, optional): Per-step fraction of trains arrived. When given,
                 its final value is used as the delivered-value numerator instead of the
                 reward sum.
+            queried (list, optional): Per-step boolean mask over trains, marking the ones
+                whose policy was queried. Trains outside the mask are excluded from the
+                action count, so the denominator counts decisions actually taken rather
+                than slots in the action vector. Absent -> every train counts.
 
         Returns:
             dict: n_actions, n_actions_excl_recovery, total_reward, ave_reward_per_action
@@ -287,8 +323,14 @@ class metrics:
             if isna(reward):
                 continue
             total_reward += reward
-            act = np.asarray(actions[step])
-            acting = np.asarray(act != do_nothing_action)
+            # Count only trains that were actually asked. A train skipped by
+            # SubStepSkippingWrapper had a single legal option, so its move was forced
+            # rather than decided, and a finished train takes no move at all; neither is
+            # an intervention this KPI should divide by. Where no mask was recorded
+            # every train counts, which is the previous behaviour.
+            act = self._queried_slice(actions[step], queried, step)
+            dn = self._queried_slice(do_nothing_action, queried, step)
+            acting = np.asarray(act != dn)
             n_actions += int(acting.sum())
             if self.recovery_action_fn is not None:
                 n_actions_excl_recovery += int(
@@ -372,7 +414,26 @@ class metrics:
             "meets_target": (not isna(ratio)) and ratio >= REWARD_PER_ACTION_TARGET_RATIO,
         })
 
-    def get_robustness_metrics_single_ep(self, obs_unperturb, obs_perturb, actions_unperturbed, actions_perturbed, do_nothing_action):
+    @staticmethod
+    def _queried_slice(act, mask, step):
+        """
+        Restrict one step's action vector to the agents that were actually queried.
+
+        `mask` is the per-step boolean series recorded by the environment, or None when
+        the domain queries every agent at every step (every single-agent domain, and
+        every railway defender that does not drive its own env). A step whose mask is
+        missing, mis-shaped, or all-False falls back to the full vector, so a defect in
+        the recording can never silently shrink the comparison to nothing.
+        """
+        arr = np.asarray(act)
+        if mask is None or step >= len(mask):
+            return arr
+        m = np.asarray(mask[step], dtype=bool).ravel()
+        if m.shape[0] != arr.ravel().shape[0] or not m.any():
+            return arr
+        return arr.ravel()[m]
+
+    def get_robustness_metrics_single_ep(self, obs_unperturb, obs_perturb, actions_unperturbed, actions_perturbed, do_nothing_action, queried=None):
         """
         Computes robustness metrics for a single episode.
 
@@ -397,8 +458,18 @@ class metrics:
         similarity_score = 0
         n_actions = 0
         for step, act in enumerate(actions_perturbed):
+            # Compare only the agents whose policy was actually queried at this step.
+            # A skipped train (single legal option) or a finished train carries a
+            # placeholder in the action vector, identical in both rollouts, so leaving
+            # it in scores it as agreeing with the baseline and as having taken no
+            # action -- inflating the similarity score and deflating the action count.
+            act_q = self._queried_slice(act, queried, step)
+            dn_q = self._queried_slice(do_nothing_action, queried, step)
+            act2 = actions_unperturbed[step]
+            act2_q = self._queried_slice(act2, queried, step)
+
             # Check if a non-baseline action was performed
-            act_performed = (act != do_nothing_action).any()
+            act_performed = (act_q != dn_q).any()
             if act_performed:
                 n_actions += 1
 
@@ -410,11 +481,10 @@ class metrics:
                 euclidean_dist.append(np.linalg.norm(obs_orig - obs_))
 
             # Count changed actions and accumulate similarity score
-            if (act != actions_unperturbed[step]).any():
+            if (act_q != act2_q).any():
                 actions_changed += 1
-                act2 = actions_unperturbed[step]
-                if act_performed and (act2 != do_nothing_action).any():
-                    similarity_score += self.similarity_score_fn(act, act2)
+                if act_performed and (act2_q != dn_q).any():
+                    similarity_score += self.similarity_score_fn(act_q, act2_q)
 
         return cos_similarity, euclidean_dist, actions_changed, similarity_score, n_actions
 
@@ -561,7 +631,61 @@ class metrics:
         area_unpert_rpa = trapezoid(data_[0]) - trapezoid(data_[1])
 
         return (degradation_times, restoration_times, min_rewards, max_rewards, [n_steps_perturbed], [area_unpert_rpa])
-    def get_resilience_metrics_performance_single_ep(self, performance_unperturbed, performance_perturbed):
+    @staticmethod
+    def _drop_missing(values, times):
+        """
+        Drop NaN samples from a per-step series, and the matching clock entries.
+
+        Returns (values, times), with times None when no usable clock was given. The two
+        are dropped together so a surviving value keeps the timestep it was taken at.
+        """
+        vals = np.asarray(list(values), dtype=float).ravel()
+        keep = ~np.isnan(vals)
+        if times is None:
+            return vals[keep], None
+        t = np.asarray(list(times), dtype=float).ravel()
+        n = min(len(vals), len(t))
+        if n == 0:
+            return vals[keep], None
+        keep = keep[:n]
+        return vals[:n][keep], t[:n][keep]
+
+    @staticmethod
+    def _align_on_env_time(values, times, grid):
+        """
+        Forward-fill a per-decision series onto a grid of environment timesteps.
+
+        `values[i]` is the state of the world *after* decision point i, which ended at
+        env time `times[i]`. The value therefore holds from `times[i]` until the next
+        decision point lands. Sampling it on a common grid makes two runs with different
+        decision/timestep ratios comparable at equal env time.
+
+        The fill looks BACKWARD -- at time t the value is the one from the latest
+        decision point that had already completed at t. Taking the next decision point's
+        value instead would credit an arrival to the timesteps before it happened, and
+        on a monotone arrival curve that is the difference between measuring a delay and
+        inventing one.
+
+        Falls back to the raw series when no usable clock was recorded.
+        """
+        vals = np.asarray(values, dtype=float)
+        if times is None:
+            return vals
+        t = np.asarray(times, dtype=float).ravel()
+        n = min(len(vals), len(t))
+        if n == 0:
+            return vals
+        vals, t = vals[:n], t[:n]
+        # np.searchsorted needs a non-decreasing clock; a non-monotone record means the
+        # clock could not be read and the decision index is the honest fallback.
+        if np.any(np.diff(t) < 0):
+            return vals
+        idx = np.searchsorted(t, grid, side="right") - 1
+        idx = np.clip(idx, 0, n - 1)
+        return vals[idx]
+
+    def get_resilience_metrics_performance_single_ep(self, performance_unperturbed, performance_perturbed,
+                                                    env_time_unperturbed=None, env_time_perturbed=None):
         """
         Resilience metrics computed on the per-step performance curve (fraction of trains
         arrived) rather than on the reward curve.
@@ -596,16 +720,43 @@ class metrics:
         if performance_unperturbed is None or performance_perturbed is None:
             return ([0], [0], [0], [0], [0], [0])
 
-        base = np.array([x for x in performance_unperturbed if not isna(x)], dtype=float)
-        pert = np.array([x for x in performance_perturbed if not isna(x)], dtype=float)
+        # Drop NaN performance samples, and drop the matching entries of the clock with
+        # them. Filtering the curve alone and then truncating the clock to the curve's
+        # new length would pair each surviving value with the wrong timestep as soon as a
+        # NaN appears anywhere but at the end.
+        base, t_base = self._drop_missing(performance_unperturbed, env_time_unperturbed)
+        pert, t_pert = self._drop_missing(performance_perturbed, env_time_perturbed)
         n_steps_perturbed = len(pert)
 
         if len(base) == 0 or n_steps_perturbed == 0:
             return ([0], [0], [0], [0], [0], [0])
 
+        # ALIGN ON ENVIRONMENT TIME BEFORE COMPARING
+        # ------------------------------------------
+        # One recorded step is one decision point. maze-flatland's SubStepSkippingWrapper
+        # keeps skipping trains that have a single legal option, across RailEnv steps as
+        # well, so a decision point can cover several timesteps -- and it covers a
+        # different number in the baseline than in the perturbed run as soon as the two
+        # trajectories diverge. Subtracting the curves by decision index then subtracts
+        # values taken at different env times, and reports degradation and restoration in
+        # decision points rather than in timesteps.
+        # Both curves are therefore forward-filled onto one grid of env timesteps, so the
+        # gap, its onset and its closure are all measured in timesteps.
+        if t_base is not None and t_pert is not None:
+            if len(t_base) and len(t_pert):
+                # Up to the baseline's own end: beyond it there is no baseline to fall
+                # behind, which is the same convention the index-based overlap used.
+                last = int(min(t_base[-1], t_pert[-1]))
+                first = int(max(t_base[0], t_pert[0]))
+                if last >= first:
+                    grid = np.arange(first, last + 1, dtype=float)
+                    base = self._align_on_env_time(base, t_base, grid)
+                    pert = self._align_on_env_time(pert, t_pert, grid)
+                    n_steps_perturbed = int(t_pert[-1] - t_pert[0]) + 1
+
         # Compare over the overlap; a perturbed episode that runs longer has already been
         # penalised through the gap accumulated up to the baseline's end.
-        min_len = min(len(base), n_steps_perturbed)
+        min_len = min(len(base), len(pert))
         gap = 100.0 * (base[:min_len] - pert[:min_len])
 
         # No point at which the agent fell behind the baseline.

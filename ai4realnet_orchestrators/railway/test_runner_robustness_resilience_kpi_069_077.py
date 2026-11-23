@@ -145,6 +145,27 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
     ENV_SEED = 0
     ENV_NAME = "flatland-sparse-3trains-37x37"
 
+    # Set to a path to KEEP the per-episode artefacts instead of discarding them. The
+    # local runner exposes it as --save-dir. Unset, results go to a temporary directory
+    # deleted on exit: acceptable for a FAB submission, where only the KPI value is
+    # returned, and wrong for any run whose numbers someone will later want to check.
+    RESULTS_DIR = None
+
+    def _results_dir(self):
+        """Context manager yielding the results directory, honouring RESULTS_DIR."""
+        import contextlib
+
+        if self.RESULTS_DIR:
+            os.makedirs(self.RESULTS_DIR, exist_ok=True)
+
+            @contextlib.contextmanager
+            def _kept():
+                logger.info(f"keeping per-episode artefacts in {self.RESULTS_DIR}")
+                yield self.RESULTS_DIR
+
+            return _kept()
+        return tempfile.TemporaryDirectory()
+
     # Defender used when no submission is supplied. There is deliberately NO default:
     # the built-in defenders are development fixtures, not reference agents, and
     # silently benchmarking against one would publish KPI values that describe a toy
@@ -334,9 +355,14 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
         # Load attackers
         attackers = self._load_attackers(env)
 
-        # Create temporary directory for results
-        with tempfile.TemporaryDirectory() as temp_dir:
-            logger.info(f"Running episodes in temp directory: {temp_dir}")
+        # Where the per-episode artefacts go. RESULTS_DIR keeps them: the per-attacker
+        # archives hold the per-episode performance curves, the action-change series and
+        # the realised perturbations, which is what makes a reported KPI auditable and
+        # recomputable without re-running the evaluation. A TemporaryDirectory deletes
+        # all of it the moment the runner exits, so only the printed aggregates survive
+        # and nothing can be checked afterwards.
+        with self._results_dir() as temp_dir:
+            logger.info(f"Running episodes in: {temp_dir}")
 
             # Run evaluation using result_getter
             rg = result_getter(
@@ -680,12 +706,24 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
         from attack_models.GEPerturbAttacker import GEPerturbAttacker
         from attack_models.RandomPerturbAttacker import RandomPerturbAttacker
         from attack_models.LambdaPIRAttacker import LambdaPIRAttacker
+        from perturbation_agents.determinism import seed_attacker_rngs
 
         attackers = []
         n_agents = self.N_TRAINS
 
+        # Each attacker's own declared seed, used to pin every generator its
+        # construction and sampling read -- including torch's, which nothing seeded
+        # before and which is where the learned attackers' network initialisation comes
+        # from. Without this the evaluation was not reproducible: see
+        # framework/perturbation_agents/determinism.py for the measurement.
+        ATTACKER_SEEDS = {
+            "SAC": 6, "PPO": 5, "RLPerturb": 4, "GEPerturb": 3,
+            "Random": 1, "LambdaPIR": 2,
+        }
+
         for attacker_type in self.ATTACKER_TYPES:
             logger.info(f"Loading attacker: {attacker_type}")
+            seed_attacker_rngs(ATTACKER_SEEDS.get(attacker_type, self.ENV_SEED))
 
             try:
                 if attacker_type == "SAC":
@@ -831,26 +869,71 @@ class MultiAttackerRobustnessTestRunner(TestRunner):
         # Layout 1: maze-flatland checkpoint
         checkpoint = None
         spaces_config = None
+        training_config = None
         for root, _dirs, files in os.walk(temp_dir):
             for name in files:
                 if name.startswith("state_dict") and name.endswith(".pt"):
                     checkpoint = os.path.join(root, name)
                 elif name == "spaces_config.pkl":
                     spaces_config = os.path.join(root, name)
+                elif name == "training_config.yaml":
+                    training_config = os.path.join(root, name)
 
         if checkpoint and spaces_config:
             logger.info("Detected maze-flatland checkpoint layout")
-            from defenders_maze import load_maze_policy, build_maze_env, MazeFlatlandDefender
-
-            policy = load_maze_policy(checkpoint, spaces_config)
-            maze_env = build_maze_env(
-                n_trains=self.N_TRAINS,
-                width=self.MAP_WIDTH,
-                height=self.MAP_HEIGHT,
-                n_cities=self.N_CITIES,
+            from defenders_maze import (
+                MazeFlatlandDefender, build_maze_env, build_maze_env_from_config,
+                load_maze_policy, load_training_config,
             )
-            logger.info("Agent loaded from zip successfully (maze-flatland)")
-            return MazeFlatlandDefender(maze_env, policy, n_trains=self.N_TRAINS)
+
+            # The submission's own config is authoritative for BOTH the network and the
+            # environment stack it was trained under. Rebuilding the reference agent's
+            # setup by hand instead forced every submission into one architecture and
+            # one wrapper stack: a different network failed in load_state_dict, and a
+            # different observation conversion with the same shapes was scored wrongly
+            # with no error at all.
+            policy = load_maze_policy(checkpoint, spaces_config, training_config)
+
+            maze_env = None
+            if training_config:
+                cfg = load_training_config(training_config)
+                try:
+                    # n_trains is NOT forced to the runner's default: the submission's
+                    # own declaration wins, so the agent is scored on the setup it was
+                    # trained on. Deliberately varying it is a separate experiment.
+                    maze_env = build_maze_env_from_config(cfg, n_trains=None)
+                except Exception as exc:
+                    logger.warning(
+                        f"could not build the environment from the submission's "
+                        f"training_config.yaml ({exc}); falling back to the reference setup"
+                    )
+            if maze_env is None:
+                logger.warning(
+                    "evaluating on the reference environment setup (%d trains, %dx%d, "
+                    "%d cities) rather than the submission's own: include "
+                    "training_config.yaml in the submission so the agent is scored "
+                    "under the stack it was trained on",
+                    self.N_TRAINS, self.MAP_WIDTH, self.MAP_HEIGHT, self.N_CITIES,
+                )
+                maze_env = build_maze_env(
+                    n_trains=self.N_TRAINS,
+                    width=self.MAP_WIDTH,
+                    height=self.MAP_HEIGHT,
+                    n_cities=self.N_CITIES,
+                )
+            # The defender's train count must match the environment that was actually
+            # built, not the runner's default: it sizes the sub-step budget and the
+            # layout of the recorded perturbation vector.
+            n_trains = self.N_TRAINS
+            try:
+                rail = getattr(maze_env, "rail_env", None) or maze_env.core_env.rail_env
+                n_trains = int(rail.number_of_agents or n_trains)
+            except Exception as exc:
+                logger.debug(f"could not read the train count from the env: {exc}")
+            logger.info(
+                f"Agent loaded from zip successfully (maze-flatland), {n_trains} trains"
+            )
+            return MazeFlatlandDefender(maze_env, policy, n_trains=n_trains)
 
         # Layout 2: pickled policy
         for candidate in ("agent.pkl", "policy.pkl"):

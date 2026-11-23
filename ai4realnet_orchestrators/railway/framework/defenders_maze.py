@@ -55,60 +55,197 @@ from defenders import RailwayDefender
 logger = logging.getLogger(__name__)
 
 
-def load_maze_policy(checkpoint_path: str, spaces_config_path: str):
+def load_training_config(training_config_path: str):
+    """
+    Read and fully resolve the hydra config a maze-flatland checkpoint ships with.
+
+    Resolution matters: the model section refers to the training hyper-parameters by
+    interpolation (`non_lin: ${train_params.non_lin}`), so an unresolved config does not
+    describe the network.
+
+    Returns the resolved config, or None when it cannot be read -- the callers then fall
+    back to the reference agent's architecture and say so.
+    """
+    import io
+
+    import yaml
+    from omegaconf import OmegaConf
+
+    try:
+        raw = yaml.safe_load(io.open(training_config_path, encoding="utf-8").read())
+        cfg = OmegaConf.create(raw)
+        OmegaConf.resolve(cfg)
+        return cfg
+    except Exception as exc:
+        logger.warning(f"could not read training config {training_config_path}: {exc}")
+        return None
+
+
+def load_maze_policy(checkpoint_path: str, spaces_config_path: str,
+                     training_config_path: str = None):
     """
     Load a trained maze-flatland TorchPolicy from a checkpoint.
 
+    THE ARCHITECTURE COMES FROM THE SUBMISSION, NOT FROM HERE
+    ---------------------------------------------------------
+    A maze-flatland checkpoint ships `training_config.yaml` beside the weights, and that
+    file states the network the weights belong to. When it is present the policy is built
+    from it through maze's own CustomModelComposer, so a submission with a different
+    architecture is evaluated as the agent its author trained.
+
+    Building the reference agent's architecture by hand instead -- FlattenConcatMaskedPolicyNet,
+    [512, 256], Tanh -- worked only for submissions shaped like our own reference agent.
+    Anything else either failed in load_state_dict, or, worse, loaded successfully while
+    being wrong: a different observation conversion with the same tensor shapes would have
+    been scored without any error at all.
+
+    Verified against the shipped reference agent: the config-built network and the
+    hand-built one produce bit-identical logits (max |difference| = 0.0 over observations
+    sampled from the declared space), so this is strictly a generalisation.
+
     Args:
-        checkpoint_path:    Path to state_dict-epoch_N.pt file.
-        spaces_config_path: Path to spaces_config.pkl (saved alongside checkpoint).
+        checkpoint_path:      Path to state_dict-epoch_N.pt.
+        spaces_config_path:   Path to spaces_config.pkl saved beside it.
+        training_config_path: Path to training_config.yaml saved beside it. Omitted or
+                              unreadable -> the reference architecture is assumed and a
+                              warning is logged, because that assumption can silently
+                              misscore a submission.
 
     Returns:
         TorchPolicy ready for inference (eval mode, CPU).
     """
     import pickle
+
     import torch
     from maze.core.agent.torch_policy import TorchPolicy
-    from maze.core.utils.factory import Factory
-    from maze.perception.models.policies import ProbabilisticPolicyComposer
-    from omegaconf import OmegaConf
 
     with open(spaces_config_path, "rb") as f:
         spaces_config = pickle.load(f)
 
     obs_spaces = spaces_config.observation_spaces_dict
     action_spaces = spaces_config.action_spaces_dict
+    agent_counts = getattr(spaces_config, "agent_counts_dict", None) or {
+        k: 1 for k in action_spaces
+    }
 
-    # Rebuild the same network as in bc_train.yaml: FlattenConcatMaskedPolicyNet [512, 256] Tanh
-    from maze.perception.models.built_in.flatten_concat_masked import FlattenConcatMaskedPolicyNet
-    from maze.distributions.distribution_mapper import DistributionMapper
+    cfg = load_training_config(training_config_path) if training_config_path else None
 
-    # Empty config — default_mapping already covers gymnasium.spaces.Discrete → Categorical
-    distribution_mapper = DistributionMapper(
-        action_space=action_spaces["train_move"],
-        distribution_mapper_config=[],
-    )
+    policy = None
+    if cfg is not None and "model" in cfg:
+        try:
+            from omegaconf import OmegaConf
+            from maze.core.utils.factory import Factory
+            from maze.perception.models.custom_model_composer import CustomModelComposer
 
-    network = FlattenConcatMaskedPolicyNet(
-        obs_shapes={k: v.shape for k, v in obs_spaces["train_move"].spaces.items()},
-        action_logits_shapes={k: (v.n,) for k, v in action_spaces["train_move"].spaces.items()},
-        non_lin=torch.nn.Tanh,
-        hidden_units=[512, 256],
-        remove_mask_from_obs=True,
-    )
+            model_cfg = OmegaConf.to_container(cfg.model, resolve=True)
+            composer = Factory(base_type=CustomModelComposer).instantiate(
+                model_cfg,
+                action_spaces_dict=action_spaces,
+                observation_spaces_dict=obs_spaces,
+                agent_counts_dict=agent_counts,
+            )
+            policy = TorchPolicy(
+                networks=composer.policy.networks,
+                distribution_mapper=composer.distribution_mapper,
+                device="cpu",
+                substeps_with_separate_agent_nets=(
+                    model_cfg.get("policy", {}).get("substeps_with_separate_agent_nets", [])
+                ),
+            )
+            logger.info("built the policy from the submission's own training_config.yaml")
+        except Exception as exc:
+            logger.warning(
+                f"could not build the policy from training_config.yaml ({exc}); "
+                f"falling back to the reference architecture"
+            )
+            policy = None
 
-    policy = TorchPolicy(
-        networks={"train_move": network},
-        distribution_mapper=distribution_mapper,
-        device="cpu",
-        substeps_with_separate_agent_nets=[],
-    )
+    if policy is None:
+        # Fallback: the reference agent's architecture, as published in bc_train.yaml.
+        # Loud, because a submission that is not shaped like the reference agent can be
+        # scored wrongly here without raising.
+        logger.warning(
+            "no usable training_config.yaml with this checkpoint: assuming the reference "
+            "architecture (FlattenConcatMaskedPolicyNet, hidden [512, 256], Tanh). A "
+            "submission trained with a different network or observation conversion may "
+            "be scored incorrectly. Include training_config.yaml in the submission."
+        )
+        from maze.distributions.distribution_mapper import DistributionMapper
+        from maze.perception.models.built_in.flatten_concat_masked import (
+            FlattenConcatMaskedPolicyNet,
+        )
+
+        # Empty config — default_mapping already covers gymnasium.spaces.Discrete → Categorical
+        distribution_mapper = DistributionMapper(
+            action_space=action_spaces["train_move"],
+            distribution_mapper_config=[],
+        )
+        network = FlattenConcatMaskedPolicyNet(
+            obs_shapes={k: v.shape for k, v in obs_spaces["train_move"].spaces.items()},
+            action_logits_shapes={k: (v.n,) for k, v in action_spaces["train_move"].spaces.items()},
+            non_lin=torch.nn.Tanh,
+            hidden_units=[512, 256],
+            remove_mask_from_obs=True,
+        )
+        policy = TorchPolicy(
+            networks={"train_move": network},
+            distribution_mapper=distribution_mapper,
+            device="cpu",
+            substeps_with_separate_agent_nets=[],
+        )
 
     state_dict = torch.load(checkpoint_path, map_location="cpu")
     policy.load_state_dict(state_dict)
     policy.eval()
     logger.info(f"Loaded maze-flatland policy from {checkpoint_path}")
     return policy
+
+
+def build_maze_env_from_config(cfg, n_trains: int = None):
+    """
+    Instantiate the environment and its wrapper stack from a submission's own config.
+
+    The wrapper stack is part of what the agent was trained under, not a detail: the
+    masking wrapper supplies `train_move_mask`, which the network consumes, and
+    SubStepSkippingWrapper decides which states the policy is ever asked about.
+    Reproducing them from the config is what makes the evaluation a measurement of the
+    agent rather than of this harness.
+
+    The config is authoritative. `n_trains` overrides it only when explicitly passed,
+    which is a deliberate departure from what the agent was trained on and is logged as
+    such; passing None -- the default -- honours the submission.
+
+    Returns None if the config does not describe an environment, so the caller can fall
+    back to the reference setup.
+    """
+    from omegaconf import OmegaConf
+    from maze.core.env.structured_env import StructuredEnv
+    from maze.core.utils.factory import Factory
+    from maze.core.wrappers.wrapper_factory import WrapperFactory
+
+    if cfg is None or "env" not in cfg:
+        return None
+
+    env_cfg = OmegaConf.to_container(cfg.env, resolve=True)
+    # `_` is the block the rest of the config interpolates from, not a constructor
+    # argument; resolution has already substituted its values where they are used.
+    env_cfg.pop("_", None)
+    if n_trains is not None and isinstance(env_cfg.get("core_env"), dict):
+        declared = env_cfg["core_env"].get("n_trains")
+        if declared != int(n_trains):
+            logger.warning(
+                "evaluating on %s trains while the submission declares %s: the agent is "
+                "being scored outside the setup it was trained on",
+                int(n_trains), declared,
+            )
+        env_cfg["core_env"]["n_trains"] = int(n_trains)
+
+    env = Factory(base_type=StructuredEnv).instantiate(env_cfg)
+
+    wrappers = OmegaConf.to_container(cfg.get("wrappers", {}) or {}, resolve=True)
+    if wrappers:
+        env = WrapperFactory.wrap_from_config(env, wrappers)
+    return env
 
 
 def build_maze_env(n_trains: int = 3, width: int = 37, height: int = 37,
@@ -253,6 +390,10 @@ class MazeFlatlandDefender(RailwayDefender):
         # corruption cannot write a value the space could not hold. Read lazily: the
         # space is only fully defined once the env has produced a state.
         self._obs_bounds = None
+        # Handles served by the last flat step, and the RailEnv clock after it. See the
+        # last_queried_handles and last_env_time properties.
+        self._last_queried_handles = set()
+        self._last_env_time = None
 
     def set_attacker(self, attacker) -> None:
         """Register the active attacker so act() injects perturbations into maze obs."""
@@ -487,13 +628,55 @@ class MazeFlatlandDefender(RailwayDefender):
                     logger.warning(f"seeding the maze env failed: {e}")
             self._maze_obs = self._maze_env.reset()
         except Exception as e:
-            logger.warning(f"MazeFlatlandDefender reset failed: {e}")
-            self._maze_obs = None
+            # Do NOT swallow this. With _maze_obs left at None, act_and_step() breaks out
+            # of its sub-step loop immediately, the episode yields no actions and no
+            # perturbations, and the run completes looking like a short but valid episode.
+            # Every other failure on this path is raised (missing mask, perturbation not
+            # applied); a failed reset has to be too.
+            raise RuntimeError(
+                f"MazeFlatlandDefender reset failed for seed {seed}: {e}"
+            ) from e
         self._next_obs = self._maze_obs
         self._cached_actions = None
         self._cached_clean_actions = None
+        self._last_queried_handles = set()
+        self._last_env_time = self._read_env_time()
         self._build_tree_builder()
         return self.tree_obs()
+
+    def _read_env_time(self):
+        """
+        The RailEnv's own step counter, or None when it cannot be read.
+
+        This is the clock the resilience KPIs have to be expressed in. One flat
+        framework step is one decision point, and SubStepSkippingWrapper keeps skipping
+        trains that have a single legal option -- across RailEnv steps as well -- so a
+        decision point can span several timesteps, and how many it spans differs between
+        the baseline and the perturbed run as soon as their trajectories diverge.
+        Comparing the two curves by decision index then compares different env times.
+        """
+        rail = self.rail_env
+        if rail is None:
+            return None
+        return getattr(rail, "_elapsed_steps", None)
+
+    @property
+    def last_queried_handles(self):
+        """
+        Handles whose policy was actually queried during the last flat step.
+
+        A train that was skipped (single legal option) or has finished never reaches
+        compute_action(), so it has no action of its own this step. Reporting it as
+        DO_NOTHING would count it as agreeing with the baseline in the similarity score
+        and as "no action" in the action count, which is why the comparison is
+        restricted to these handles.
+        """
+        return set(getattr(self, "_last_queried_handles", set()) or set())
+
+    @property
+    def last_env_time(self):
+        """RailEnv step counter after the last flat step; see _read_env_time()."""
+        return getattr(self, "_last_env_time", None)
 
     def act_and_step(self, perturbed_obs: dict, clean_obs: dict):
         """
@@ -655,6 +838,12 @@ class MazeFlatlandDefender(RailwayDefender):
 
         self._cached_actions = dict(actions)
         self._cached_clean_actions = dict(clean_actions) if clean_actions else dict(actions)
+        # Which trains actually reached the policy this step, and what the RailEnv clock
+        # reads now. Both are consumed by FlatlandEnvironment: the first restricts the
+        # action comparison to trains that had a choice, the second lets the resilience
+        # KPIs be computed on env time instead of decision index.
+        self._last_queried_handles = {h for h in actions.keys() if h is not None}
+        self._last_env_time = self._read_env_time()
         applied = self._assemble_applied_perturbation(applied_deltas)
         return actions, self._cached_clean_actions, reward, done, applied
 

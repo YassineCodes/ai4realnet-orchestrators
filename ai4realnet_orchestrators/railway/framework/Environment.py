@@ -9,6 +9,35 @@ evaluation_framework/result_getter.py and metrics.py work unchanged:
     env.do_nothing_action()   -> np.ndarray of zeros, one per agent
     env.get_similarity_score  -> callable(act1, act2) -> float in [0, 1]
     env.attacker              -> set externally by result_getter
+
+IMPORTANT -- perturbation semantics for a maze-flatland submission
+------------------------------------------------------------------
+The maze-flatland policy never reads the TreeObs that step() builds and that the
+attacker's perturb() is called on. Its input is the maze observation produced by
+GraphDirectionalObservationConversion: an encoding of maze-flatland's own
+TreeSwitchObsRailEnv (computed on the same RailEnv), plus train features taken from the
+FlatlandMazeState and the action mask.
+
+What follows from that:
+
+  - A perturbation applied only to the TreeObs cannot change this policy's action. An
+    attacker that acts solely through the TreeObs -- for instance a query-based attacker
+    scoring candidates through defender.act() -- is measuring structural immunity, not
+    robustness. Those KPIs must be reported as NOT APPLICABLE.
+  - The attacker's decision is therefore re-applied to the maze observation. The
+    attacker chooses once per step, in perturb(), and publishes the choice; the defender
+    only applies it (see MazeFlatlandDefender.act_and_step). This does change actions.
+  - The perturbation recorded for a step is the delta actually applied to the maze
+    observation the policy read, not the TreeObs delta, so that KPI-VF-073 correlates
+    action changes against features the policy really saw. An all-zero record for a
+    whole attacker means the attack never reached the policy.
+  - The resilience KPIs are arrival-based and are affected whenever the attack changes
+    train dynamics, independently of the above.
+
+Two book-keeping series exist for the same reason. `last_env_time` carries the RailEnv
+step counter, because one framework step is one decision point and may span several
+timesteps; `last_queried_mask` marks the trains whose policy was actually queried,
+because a skipped train has no action of its own.
 """
 
 import logging
@@ -104,6 +133,20 @@ class FlatlandEnvironment:
         # it is monotone non-decreasing, varies through the episode, and drops behind the
         # baseline exactly when an attack delays trains. See last_performance.
         self.last_performance = 0.0
+
+        # RailEnv step counter after the most recent step, recorded per step by
+        # result_getter. One framework step is one decision point; with the maze
+        # defender's SubStepSkippingWrapper a decision point can span several timesteps,
+        # and it spans a different number in the baseline and the perturbed run once
+        # their trajectories diverge. The resilience KPIs are aligned on this clock
+        # rather than on the decision index.
+        self.last_env_time = 0
+
+        # Boolean per agent handle: was this agent's policy queried in the most recent
+        # step. A skipped or finished train never reaches the policy, so it has no
+        # action of its own; including it in the action comparison would score it as
+        # agreeing with the baseline and as having taken no action.
+        self.last_queried_mask = None
 
     # ------------------------------------------------------------------
     # Public interface (same as power-grid Environment)
@@ -205,6 +248,14 @@ class FlatlandEnvironment:
             # KPIs and KPI-RF-078 are computed from this signal. Leaving it frozen made a
             # working agent look like it delivered no trains at all.
             self.last_performance = self._compute_performance()
+            # The defender knows which trains it served and what the RailEnv clock
+            # reads; neither can be recovered from the action dict alone, because a
+            # skipped train and a train that chose DO_NOTHING are indistinguishable
+            # once the actions are flattened.
+            self.last_env_time = self._read_env_time()
+            self.last_queried_mask = self._queried_mask(
+                getattr(self.defender, "last_queried_handles", None)
+            )
             act_vec = self._flatten_actions(action_dict)
             act_unperturbed_vec = (self._flatten_actions(clean_action_dict)
                                    if self.attacker is not None else act_vec.copy())
@@ -236,10 +287,45 @@ class FlatlandEnvironment:
 
         # Recorded by result_getter alongside the reward; see last_performance.
         self.last_performance = self._compute_performance()
+        # On this path every agent is queried every step and one step is one timestep,
+        # so the two series are the trivial ones. They are still recorded, so the
+        # downstream metrics take the same code path in both modes.
+        self.last_env_time = self._read_env_time()
+        self.last_queried_mask = self._queried_mask(None)
 
         obs_vec = self._flatten_obs(self._current_obs)
 
         return obs_vec, perturbation, act_vec, act_unperturbed_vec, reward, done
+
+    def _read_env_time(self):
+        """
+        RailEnv step counter, falling back to the previous value plus one.
+
+        The fallback keeps the series strictly increasing on a Flatland build that does
+        not expose _elapsed_steps, in which case it degenerates to the decision index
+        and the alignment below becomes a no-op rather than an error.
+        """
+        if self.drives_env:
+            t = getattr(self.defender, "last_env_time", None)
+            if t is not None:
+                return int(t)
+        t = getattr(self.env, "_elapsed_steps", None)
+        if t is not None:
+            return int(t)
+        return int(getattr(self, "last_env_time", 0) or 0) + 1
+
+    def _queried_mask(self, handles):
+        """
+        Boolean array over sorted agent handles: was this agent's policy queried.
+
+        `handles` of None means "every agent was queried", which is the case for every
+        defender that does not drive its own environment.
+        """
+        all_handles = sorted(self.env.get_agent_handles())
+        if handles is None:
+            return np.ones(len(all_handles), dtype=bool)
+        served = set(handles)
+        return np.array([h in served for h in all_handles], dtype=bool)
 
     def _compute_performance(self):
         """

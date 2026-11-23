@@ -107,6 +107,14 @@ def main():
                              "reading the observation, so they are immune to these "
                              "attacks by construction. These are development fixtures, "
                              "not reference agents - no default, pass --agent instead)")
+    parser.add_argument("--save-dir", default=None,
+                        help="Keep the per-episode artefacts here (per-attacker "
+                             "archives with the performance curves, action-change "
+                             "series and realised perturbations, plus the plots and "
+                             "the HTML report). Without it they go to a temporary "
+                             "directory that is deleted when the run ends, so only "
+                             "the printed KPI values survive and nothing can be "
+                             "audited or recomputed afterwards.")
     parser.add_argument("--all", action="store_true",
                         help="Print all 9 KPI values from the single evaluation run")
     args = parser.parse_args()
@@ -133,6 +141,7 @@ def main():
     # OVERRIDE framework path and episode count for local testing
     runner.FRAMEWORK_PATH = FRAMEWORK_DIR
     runner.NUM_EPISODES = args.episodes
+    runner.RESULTS_DIR = args.save_dir
     runner.BASELINE_DEFENDER = args.baseline
     if args.trains is not None:
         runner.N_TRAINS = args.trains
