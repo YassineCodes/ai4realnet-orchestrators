@@ -49,21 +49,15 @@ The evaluation runs the defender agent against **6 different attacker types**:
 
 Unlike the power grid domain, the railway attackers train from scratch during the evaluation, so no `trained_models/` folder is required.
 
-**Two differences from the power grid suite, both of which limit a cross-domain
-comparison of a single attacker.** First, provenance: power grid ships pre-trained
-attacker checkpoints, so an attacker of a given name there has seen that domain before
-the decisive episodes and here it has not. Second, composition: power grid and ATM run
-seven attackers, splitting the soft actor-critic adversary into `SAC_5` and `SAC_10` at
-two budgets, while railway runs one `SAC`, because the railway budget is relative rather
-than absolute and the two variants would not differ in the way they do there.
+Railway runs a single `SAC` rather than the two budget variants `SAC_5` and `SAC_10`,
+because the railway budget is relative rather than absolute and the two variants would not
+separate here.
 
 The railway attack space is also semantic rather than additive: an action is
 `(train handle, corruption type, severity)`, because the effective axis of attack in this
 observation is which claim is made about which train and how extreme it is, not Gaussian
-noise on a scalar. That space is what made the one significant result here possible, so
-it is a deliberate divergence from the power-grid noise model rather than a gap. The
-suite-level aggregate and the random baseline remain comparable; a single learned
-attacker's value is not.
+noise on a scalar. That space is what made the one significant result here possible, and
+it is a deliberate choice rather than an omission.
 
 ### Measured results
 
@@ -344,9 +338,9 @@ Three consequences:
 3. **`train_speed` is unattackable by construction.** It holds exactly one distinct value
    (1.0) across the clean rollouts, because training used `speed_ratio_map={1.0: 1.0}`.
    The policy never saw it vary and cannot have learned to use it.
-4. **Under a perturbation budget, the magnitude attacks score zero.** ATM clips at
-   xi = 0.1; railway has no budget. A cross-domain robustness claim between the two
-   domains is not comparing like with like until railway is budgeted.
+4. **Under a perturbation budget, the magnitude attacks score zero.** The result above
+   is measured unbudgeted; with `xi` set, an attack that wins by writing an extreme value
+   cannot play, so these rows should be read together with the budget the run declares.
 
 ### Corruption types must be resolved against the observation the policy reads
 
@@ -463,12 +457,12 @@ matched-space control. The claim it supports is "a learned attacker beats the bl
 baseline", not "beats a random search over the same action space"; establishing the
 latter needs a baseline that samples severity too.
 
-### A perturbation budget, so the number is comparable across domains
+### A perturbation budget, so the attack magnitude is bounded
 
-The power-grid domain bounds its attacker -- `SACAdversarialContinuous` clips the
-perturbation to +/- epsilon, 0.1 by default -- and railway did not, so a railway
-robustness number was not comparable with a bounded one, and the attacks that work here
-are ones no bounded attacker could play. `MazeFlatlandDefender(..., xi=...)` applies a
+The attacker was unbounded, so the attacks that scored here are ones no bounded
+attacker could play, and the magnitude was not part of the declared threat model.
+`SACAdversarialContinuous` in `power_grid/` clips the perturbation to +/- epsilon, 0.1 by
+default, and railway now takes the same form of bound. `MazeFlatlandDefender(..., xi=...)` applies a
 budget, and `utils.clip_to_budget` enforces it on the delta, with the observation rebuilt
 from the clipped delta so the perturbation recorded is the one the policy received.
 
@@ -595,6 +589,15 @@ generator and Python's `random`, and the runner calls it immediately before cons
 each attacker with that attacker's own declared seed -- so an attacker's draws depend on
 its seed alone and not on how many were built before it. After the fix the same two runs
 are **bit-identical on all ten KPIs**.
+
+Bit-identity is a property of repeated runs on one machine with one set of library
+versions and is not a cross-platform guarantee. The simulator amplifies small
+floating-point differences into different episode lengths, so the same model and the
+same seeds on another platform or BLAS will not reproduce every digit. How much of the
+ordering survives such a move has not been measured for this domain; it has for ATM,
+where most KPIs kept their ranking of the attackers and KPI-AF-074 did not. Quote a KPI
+value together with the environment that produced it, and re-measure before comparing
+values that come from two different machines.
 
 The paired significance tests were never invalid: within one run every attacker and the
 baseline still traverse the same episode seeds, which is what the pairing needs. What was
