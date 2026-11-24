@@ -382,9 +382,10 @@ class MazeFlatlandDefender(RailwayDefender):
         self._attacker = None
         # Perturbation budget: each observation element may move by at most xi times its
         # own clean magnitude. None leaves the attacker unbounded, which is how every
-        # railway result so far was produced; the power-grid domain bounds its attacker
-        # at epsilon=0.1, so a cross-domain comparison needs this set here too. See
-        # utils.clip_to_budget for why the bound is relative and not absolute.
+        # result here was produced before this bound existed, and an unbounded attacker
+        # can win by writing a value no bounded one could play. SACAdversarialContinuous
+        # in power_grid/ clips to +/- epsilon, 0.1 by default; this is the same form of
+        # bound. See utils.clip_to_budget for why it is relative and not absolute.
         self._xi = xi
         # {observation key: (low, high)} read from the env own declared space, so the
         # corruption cannot write a value the space could not hold. Read lazily: the
