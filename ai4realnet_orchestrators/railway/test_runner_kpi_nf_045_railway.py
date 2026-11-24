@@ -64,7 +64,7 @@ class TestRunner_KPI_NF_045_Railway(AbtractTestRunnerRailway):
       assert r["info"]["malfunction"] == 0
     tail_no_malfunction = trajectory_no_malfunction.trains_rewards_dones_infos.tail(num_agents)
     assert tail_no_malfunction["done"].values.sum() == num_agents
-    logger.info(f"tail_no_malfunction.reward {tail_no_malfunction["reward"].to_list()}")
+    logger.info(f"tail_no_malfunction.reward {tail_no_malfunction['reward'].to_list()}")
     punctuality_tuples_no_malfunction = [ast.literal_eval(r) if isinstance(r, str) else r for r in tail_no_malfunction["reward"].to_list()]
     logger.info(f"punctuality_tuples_no_malfunction {punctuality_tuples_no_malfunction}")
 
@@ -84,7 +84,7 @@ class TestRunner_KPI_NF_045_Railway(AbtractTestRunnerRailway):
 
     # with malfunction
     tail_with_malfunction = trajectory_with_malfunction.trains_rewards_dones_infos.tail(num_agents)
-    logger.info(f"tail_with_malfunction.reward {tail_with_malfunction["reward"].to_list()}")
+    logger.info(f"tail_with_malfunction.reward {tail_with_malfunction['reward'].to_list()}")
     assert tail_with_malfunction["done"].values.sum() == num_agents
     punctuality_tuples_with_malfunction = [ast.literal_eval(r) if isinstance(r, str) else r for r in tail_with_malfunction["reward"].to_list()]
     logger.info(f"punctuality_tuples_with_malfunction {punctuality_tuples_with_malfunction}")
