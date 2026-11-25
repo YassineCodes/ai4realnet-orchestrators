@@ -75,14 +75,27 @@ trained on one cannot be evaluated on the other, and KPI values from the two are
 comparable.
 
 > **Note on installing the environment.** `StaticObstacleCREnv-v1` exists only in the
-> AI4REALNET bluesky-gym fork, not in the `bluesky-gym` release on PyPI. The fork
-> declares `requires-python = ">=3.10"`, but
+> AI4REALNET bluesky-gym fork, not in the `bluesky-gym` release on PyPI.
+>
+> Install it at upstream commit `539ff884` or later, which is where every figure in
+> this document was measured. The commit this project was originally pinned to,
+> `e91749ba20`, has `ALTITUDE = 350  # In FL` passed to `bs.traf.cre(acalt=...)`, which
+> BlueSky reads as metres: aircraft were created at 350 m rather than FL350. `539ff884`
+> corrects it to `35000 ft * 0.3048 = 10668 m`. The constant is not cosmetic, because
+> BlueSky derives true airspeed from calibrated airspeed and altitude at aircraft
+> creation: measured true airspeed moves 65.7%, episodes are 36% shorter, and no seed
+> reproduces its previous return. A checkout on an earlier commit is measuring a
+> different task, which the module SHA-256 recorded below will show.
+>
+> The fork declares `requires-python = ">=3.10"`, but
 > `bluesky_gym/envs/common/screen_dummy.py` does `from warnings import deprecated`,
 > which is Python 3.13+ (PEP 702), so importing any env module fails on 3.10 to 3.12.
 > `framework/_bluesky_compat.py` provides the missing attribute before `bluesky_gym` is
 > imported, without modifying the fork. It is a no-op on 3.13 and can be deleted once
 > the fork is fixed; the fix there is a version guard or
-> `from typing_extensions import deprecated`.
+> `from typing_extensions import deprecated`. Its `pyproject.toml` also pins
+> `numpy==2.3.1`, which itself requires Python 3.11 or newer, while the same file
+> declares the floor as 3.10, so that floor cannot resolve.
 
 ## What's in `atm/framework/`
 
