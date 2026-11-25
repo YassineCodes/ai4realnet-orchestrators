@@ -77,6 +77,31 @@ class SB3Defender(ATMDefender):
         action, _ = self.model.predict(obs_dict, deterministic=self.deterministic)
         return np.asarray(action, dtype=np.float64).ravel()
 
+    def act_batch(self, obs_dicts):
+        """
+        Actions for many observations in ONE policy call.
+
+        This is what makes finite-difference gradient estimation affordable: estimating
+        the gradient over a 48-scalar observation needs 2 queries per feature per
+        iteration, which is 96 single calls but one batched call. The power-grid
+        gradient-estimation attacker batches its finite differences the same way.
+
+        Args:
+            obs_dicts: sequence of Dict observations, all with the same keys and shapes.
+
+        Returns:
+            np.ndarray of shape (len(obs_dicts), action_dim).
+        """
+        if not obs_dicts:
+            return np.zeros((0, 2), dtype=np.float64)
+        keys = list(obs_dicts[0].keys())
+        batch = {
+            k: np.stack([np.asarray(o[k], dtype=np.float32).ravel() for o in obs_dicts])
+            for k in keys
+        }
+        actions, _ = self.model.predict(batch, deterministic=self.deterministic)
+        return np.asarray(actions, dtype=np.float64).reshape(len(obs_dicts), -1)
+
 
 class StraightLineDefender(ATMDefender):
     """

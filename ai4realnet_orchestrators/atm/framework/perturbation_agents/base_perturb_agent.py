@@ -18,8 +18,13 @@ class BasePerturbationAgent(ABC):
     """
     Abstract base class for all ATM perturbation agents.
 
-    All agents receive {agent_handle: TreeObs Node} and return a perturbed
-    copy of that dict.  Subclasses must implement perturb().
+    All agents receive the BlueSky-Gym Dict observation -- {feature name: np.ndarray},
+    the keys and shapes being whichever the configured environment declares -- and
+    return a perturbed copy of it. Subclasses must implement perturb().
+
+    Agents iterate the keys the observation actually carries and never name them, so a
+    task that adds feature blocks (the AI4REALNET v1 task adds five intruder-aircraft
+    blocks over the earlier v0 task) is perturbed correctly without a change here.
 
     Attributes:
         name (str): Identifier for this agent.

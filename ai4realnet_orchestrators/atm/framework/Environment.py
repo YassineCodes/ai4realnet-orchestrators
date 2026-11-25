@@ -26,13 +26,26 @@ logger = logging.getLogger(__name__)
 
 # Distance to the destination waypoint, as the env reports it in the observation.
 # Used for the per-step performance signal (see _compute_performance).
+#
+# This is the ONE observation field this framework names. Everything else -- the
+# perturbation path, the action comparison, the flattening -- iterates whatever keys the
+# configured environment declares. The field is present in every BlueSky-Gym task that
+# has a destination waypoint, including both AI4REALNET ATM tasks, and on the v1 task it
+# is also the quantity the environment's own progress reward is computed from, so the
+# resilience KPIs and the environment agree on what progress means.
+#
+# A task without it is detected rather than silently mis-scored: see _compute_performance.
 _DISTANCE_KEY = "destination_waypoint_distance"
 
 
 class BlueSkyGymEnvironment:
     """
     Args:
-        env:      A gymnasium env created with gym.make("StaticObstacleEnv-v0", ...).
+        env:      A BlueSky-Gym env, created by the runner from its configured ENV_ID
+                  (the AI4REALNET task "StaticObstacleCREnv-v1" by default). Nothing
+                  here depends on which task it is: the observation keys and the action
+                  space are read from the env itself, so a task with other aircraft in
+                  the observation is handled without a change here.
         defender: An ATM defender exposing act(obs_dict) -> np.ndarray (see defenders.py).
         attacker: Attacker instance or None. result_getter sets `env.attacker = ...`.
     """
@@ -89,9 +102,11 @@ class BlueSkyGymEnvironment:
 
         act = np.asarray(self.defender.act(perturbed_obs), dtype=np.float64).ravel()
 
-        # Counterfactual action on the clean observation. The SB3 policy is stateless, so
-        # a second call cannot disturb the rollout (unlike the railway/power-grid
-        # defenders, whose act() advances internal state).
+        # Counterfactual action on the clean observation. Both defenders in this domain
+        # are stateless -- SB3Defender.act is a model.predict, StraightLineDefender.act
+        # returns zeros -- so this second call cannot disturb the rollout. A defender
+        # whose act() advanced internal state would invalidate it; see
+        # evaluation_framework/test_attacker_credit.py, which pins the property.
         if self.attacker is not None:
             act_unperturbed = np.asarray(self.defender.act(clean_obs), dtype=np.float64).ravel()
         else:
@@ -139,7 +154,20 @@ class BlueSkyGymEnvironment:
         is dominated by sparse events (+1 on reaching the waypoint, -5 per intrusion), so
         progress towards the waypoint is used instead: it moves every step and falls
         behind the baseline exactly when an attack diverts the aircraft.
+
+        On a task whose observation does not report the distance to a destination
+        waypoint this signal does not exist, and the three KPIs above would silently be
+        computed on a flat zero curve -- reporting perfect resilience for any agent. That
+        case raises instead, once, on the first step.
         """
+        if self._current_obs and _DISTANCE_KEY not in self._current_obs:
+            raise RuntimeError(
+                f"this environment's observation has no '{_DISTANCE_KEY}', so the "
+                f"progress signal behind KPI-AF-074, KPI-DF-075 and KPI-RF-076 cannot "
+                f"be computed. Observation keys: {sorted(self._current_obs)}. Report "
+                f"those three KPIs as not applicable for this task, or supply a "
+                f"task-specific performance signal."
+            )
         if not self._current_obs or self._initial_distance is None:
             return 0.0
         d = float(np.ravel(self._current_obs.get(_DISTANCE_KEY, [0.0]))[0])

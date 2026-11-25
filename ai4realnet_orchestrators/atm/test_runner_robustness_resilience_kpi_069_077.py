@@ -20,9 +20,18 @@ Design mirrors railway/test_runner_robustness_resilience_kpi_069_077.py: a singl
 evaluation runs every attacker once, computes all metrics, and serves the metric the
 requested KPI asks for.
 
-Environment: BlueSky-Gym "StaticObstacleEnv-v0" - the single-agent, single-objective ATM
-control task (one scalar reward: waypoint reward, drift penalty, restricted-area
-intrusion penalty). The submitted agent is a Stable-Baselines3 policy.
+Environment: the AI4REALNET air traffic task, BlueSky-Gym "StaticObstacleCREnv-v1" by
+default. One aircraft is controlled and must reach a destination waypoint while avoiding
+restricted areas AND other aircraft, which the agent has to navigate around as well.
+The submitted agent is a Stable-Baselines3 policy.
+
+Nothing here is specific to that environment id. ENV_ID is overridable (see below) and
+every environment-dependent quantity -- the observation layout, the action space and the
+reward constants that set KPI-DF-069's scale -- is read from the environment that id
+resolves to, so switching task only changes the id. "StaticObstacleEnv-v0" is the
+earlier single-aircraft task and remains selectable; it has 7 observation keys and 10
+restricted areas against v1's 12 keys and 5 restricted areas plus 5 intruders, so an
+agent trained on one cannot be evaluated on the other.
 
 Author: INESC TEC
 """
@@ -53,8 +62,90 @@ from evaluation_framework.metrics import REWARD_PER_ACTION_TARGET_RATIO
 
 logger = logging.getLogger(__name__)
 
-ENV_ID = "StaticObstacleEnv-v0"
-MAX_EPISODE_STEPS = 200
+# The AI4REALNET air traffic environment. Overridable so a campaign can be run against
+# another BlueSky-Gym task without a code change; the KPI definitions do not depend on
+# which one is selected.
+ENV_ID = os.environ.get("AI4REALNET_ATM_ENV_ID", "StaticObstacleCREnv-v1")
+MAX_EPISODE_STEPS = int(os.environ.get("AI4REALNET_ATM_MAX_EPISODE_STEPS", "200"))
+
+
+def env_reward_constants(env_id=None):
+    """
+    Reward constants of the environment ENV_ID resolves to.
+
+    Read from the module gymnasium's registry points the id at, rather than imported
+    from one fixed module, because the intrusion penalties differ between the ATM tasks
+    and they set the scale KPI-DF-069 is normalised by. v1 penalises an intrusion into
+    another aircraft's separation minima as well as into a restricted area; v0 has no
+    other aircraft. Hardcoding either set would silently misnormalise the other task.
+
+    Returns a dict of penalties, falling back to the v1 values when bluesky_gym cannot
+    be imported (orchestrator registration imports this module without the simulator).
+    """
+    import importlib
+
+    env_id = env_id or ENV_ID
+    restricted, aircraft = -5.0, -5.0
+    try:
+        from gymnasium.envs.registration import registry
+        spec = registry.get(env_id)
+        module_path = str(spec.entry_point).split(":")[0]
+        mod = importlib.import_module(module_path)
+        restricted = float(getattr(mod, "RESTRICTED_AREA_INTRUSION_PENALTY", restricted))
+        # Absent on the tasks without other aircraft; 0 then, so the scale is not
+        # inflated by a penalty the environment cannot award.
+        aircraft = float(getattr(mod, "AC_INTRUSION_PENALTY", 0.0))
+    except Exception as exc:  # pragma: no cover - import-time path
+        logger.debug(f"could not read reward constants for {env_id}: {exc}")
+    return {"restricted_area": restricted, "aircraft": aircraft}
+
+
+def env_provenance(env_id=None):
+    """
+    Which build of the environment code a reported KPI was measured on.
+
+    The id alone does not identify it. StaticObstacleCREnv-v1 exists only in the
+    AI4REALNET bluesky-gym fork, which is installed from a working directory rather than a
+    versioned release, so the same id can resolve to different code on two machines or on
+    two dates. Every KPI here depends on that code: the reward constants set the scale
+    KPI-DF-069 normalises by, and the observation layout and dynamics set everything else.
+
+    Resolved through the registry, like env_reward_constants(), so it describes the module
+    that actually ran rather than one named here. Returns strings only, so it can be
+    logged and stored beside the KPI values; "unknown" where a field cannot be read.
+    """
+    import hashlib
+    import importlib
+
+    env_id = env_id or ENV_ID
+    out = {"env_id": env_id, "distribution": "unknown",
+           "module": "unknown", "module_file": "unknown", "module_sha256": "unknown"}
+    try:
+        from gymnasium.envs.registration import registry
+        spec = registry.get(env_id)
+        module_path = str(spec.entry_point).split(":")[0]
+        out["module"] = module_path
+        mod = importlib.import_module(module_path)
+        path = getattr(mod, "__file__", None)
+        if path and os.path.isfile(path):
+            out["module_file"] = os.path.abspath(path)
+            h = hashlib.sha256()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            out["module_sha256"] = h.hexdigest()
+    except Exception as exc:  # pragma: no cover - import-time path
+        logger.debug(f"could not resolve the env module for {env_id}: {exc}")
+
+    # The fork carries no __version__, so importlib.metadata is the only place a version
+    # appears, and only when it was pip-installed rather than put on sys.path.
+    try:
+        from importlib.metadata import version
+        out["distribution"] = "bluesky-gym " + version("bluesky-gym")
+    except Exception as exc:  # pragma: no cover - import-time path
+        logger.debug(f"could not read the bluesky-gym distribution version: {exc}")
+    return out
+
 
 # ============================================================================
 # KPI ID mapping (ATM test ids from atm/orchestrator.py)
@@ -120,9 +211,14 @@ class ATMRobustnessTestRunner(TestRunner):
     # Same suite as power_grid: one lambda attacker (lambda-PIR), the two learned
     # attackers at two budgets (SAC_5 / SAC_10), PPO, RLPerturb, GEPerturb and Random.
     ATTACKER_TYPES = ["GEPerturb", "LambdaPIR", "Random", "PPO", "SAC_10", "SAC_5", "RLPerturb"]
+    # Set to a path to KEEP the per-episode artefacts (performance curves,
+    # action-change series, realised perturbations, plots, HTML report) instead of
+    # discarding them. The local runner exposes it as --save-dir.
+    RESULTS_DIR = None
     N_EPISODES = 10
     XI = 0.1                      # L-infinity budget per observation feature
-    N_AIRCRAFT = 1                # StaticObstacleEnv-v0 controls a single aircraft
+    N_AIRCRAFT = 1                # the ATM tasks control one aircraft; intruders in v1
+                                  # are traffic, not controlled agents
 
     def __init__(self, test_id: str, scenario_ids: List[str], benchmark_id: str = None, **kwargs):
         super().__init__(test_id=test_id, scenario_ids=scenario_ids, benchmark_id=benchmark_id, **kwargs)
@@ -213,6 +309,12 @@ class ATMRobustnessTestRunner(TestRunner):
 
     def _initialize_environment(self, seed_env=True):
         import gymnasium as gym
+
+        # Must run before bluesky_gym: the AI4REALNET fork does not import on Python
+        # 3.10 to 3.12 without it. See framework/_bluesky_compat.py.
+        from _bluesky_compat import ensure_warnings_deprecated
+        ensure_warnings_deprecated()
+
         import bluesky_gym
         import bluesky_gym.envs  # noqa: F401  (registers the envs)
 
@@ -234,9 +336,21 @@ class ATMRobustnessTestRunner(TestRunner):
         from attack_models.RPerturbAttacker import RPerturbAttacker
         from attack_models.SACAttacker import SACAttacker
 
+        from perturbation_agents.determinism import seed_attacker_rngs
+
         d = self._defender_agent
         attackers = []
+        # Each attacker's own declared seed, used to pin every generator its
+        # construction and sampling read -- including torch's, which nothing seeded
+        # before and which is where the learned attackers' network initialisation comes
+        # from. Without this the evaluation is not reproducible: see
+        # framework/perturbation_agents/determinism.py.
+        ATTACKER_SEEDS = {
+            "Random": 1, "LambdaPIR": 2, "GEPerturb": 3, "RLPerturb": 4,
+            "PPO": 5, "SAC_5": 6, "SAC_10": 7,
+        }
         for name in self.ATTACKER_TYPES:
+            seed_attacker_rngs(ATTACKER_SEEDS.get(name, 0))
             try:
                 if name == "Random":
                     attackers.append(RPerturbAttacker(xi=self.XI, seed=1))
@@ -264,16 +378,24 @@ class ATMRobustnessTestRunner(TestRunner):
         from evaluation_framework.metrics import metrics
         from evaluation_framework.result_getter import result_getter
 
+        prov = env_provenance()
         logger.info(
             f"Running ATM robustness evaluation\n"
-            f"  Env: {ENV_ID}\n  Episodes: {self.N_EPISODES}\n"
+            f"  Env: {ENV_ID}\n"
+            f"  Env code: {prov['distribution']}, {prov['module']}\n"
+            f"  Env file: {prov['module_file']}\n"
+            f"  Env sha256: {prov['module_sha256']}\n"
+            f"  Episodes: {self.N_EPISODES}\n"
             f"  Attackers: {self.ATTACKER_TYPES}\n  xi: {self.XI}"
         )
 
         env = self._initialize_environment()
         attackers = self._load_attackers()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        # RESULTS_DIR keeps the per-episode artefacts; unset, they go to a temporary
+        # directory deleted on exit, so only the returned KPI value survives. Right for a
+        # FAB submission, wrong for any run whose numbers someone will want to check.
+        with self._results_dir() as temp_dir:
             rg = result_getter(env, self._defender_agent, self.N_EPISODES, temp_dir, attackers)
             rg.calculate_metrics()
 
@@ -307,6 +429,21 @@ class ATMRobustnessTestRunner(TestRunner):
     # Aggregation (mirrors the railway runner)
     # ------------------------------------------------------------------
 
+    def _results_dir(self):
+        """Context manager yielding the results directory, honouring RESULTS_DIR."""
+        import contextlib
+
+        if self.RESULTS_DIR:
+            os.makedirs(self.RESULTS_DIR, exist_ok=True)
+
+            @contextlib.contextmanager
+            def _kept():
+                logger.info(f"keeping per-episode artefacts in {self.RESULTS_DIR}")
+                yield self.RESULTS_DIR
+
+            return _kept()
+        return tempfile.TemporaryDirectory()
+
     def _aggregate_metrics(self, metrics_dicts: List, unperturbed_data: Dict) -> Dict:
         vulnerability_scores, steps_survived, similarity_scores = [], [], []
         reward_drops, action_change_freqs = [], []
@@ -326,8 +463,12 @@ class ATMRobustnessTestRunner(TestRunner):
         # penalty, so the baseline total can be near zero or negative. Normalising instead
         # by the worst reward reachable over the same number of steps keeps KPI-DF-069 in
         # [0, 100] and defined for any baseline.
+        # The worst reward reachable per step is one intrusion of each kind the
+        # configured environment can award. Read from that environment, not assumed.
+        penalties = env_reward_constants()
+        worst_per_step = abs(penalties["restricted_area"]) + abs(penalties["aircraft"])
         worst_case_reward_magnitude = float(
-            abs(RESTRICTED_AREA_INTRUSION_PENALTY) * self.N_AIRCRAFT * total_steps_unperturbed
+            worst_per_step * self.N_AIRCRAFT * total_steps_unperturbed
         )
         reward_scale = max(abs(total_reward_unperturbed), worst_case_reward_magnitude)
 
@@ -416,9 +557,7 @@ class ATMRobustnessTestRunner(TestRunner):
         return float(np.mean(defined)) if defined else 0.0
 
 
-# The intrusion penalty that sets the worst-case reward scale above; taken from
-# bluesky_gym/envs/static_obstacle_env.py so the two cannot drift apart silently.
-try:
-    from bluesky_gym.envs.static_obstacle_env import RESTRICTED_AREA_INTRUSION_PENALTY
-except Exception:  # bluesky_gym not importable at import time (e.g. orchestrator registration)
-    RESTRICTED_AREA_INTRUSION_PENALTY = -5
+# The reward constants that set KPI-DF-069's scale are read from whichever environment
+# ENV_ID resolves to; see env_reward_constants() near the top of this module. They are
+# deliberately not imported from one fixed env module: the penalties differ between the
+# ATM tasks, and a fixed import would misnormalise every task but one.

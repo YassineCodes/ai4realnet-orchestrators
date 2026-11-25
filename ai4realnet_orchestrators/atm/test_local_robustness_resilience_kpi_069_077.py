@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(SCRIPT_DIR))          # ai4realnet_orchestrat
 sys.path.insert(0, os.path.dirname(os.path.dirname(SCRIPT_DIR)))
 
 from ai4realnet_orchestrators.atm.test_runner_robustness_resilience_kpi_069_077 import (  # noqa: E402
-    KPI_MAPPING, ATMRobustnessTestRunner)
+    ENV_ID, KPI_MAPPING, ATMRobustnessTestRunner)
 
 
 def main():
@@ -30,6 +30,10 @@ def main():
     ap.add_argument("--xi", type=float, default=0.1)
     ap.add_argument("--attackers", default="GEPerturb,LambdaPIR,Random,PPO,SAC_10,SAC_5,RLPerturb")
     ap.add_argument("--kpi", default=None, help="e.g. DF-069; default: report all ten")
+    ap.add_argument("--save-dir", default=None,
+                    help="Keep the per-episode artefacts here. Without it they go to a "
+                         "temporary directory deleted when the run ends, so only the "
+                         "printed KPI values survive and nothing can be audited.")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -48,13 +52,17 @@ def main():
     runner = ATMRobustnessTestRunner(test_id=first_id, scenario_ids=["local"], benchmark_id="local")
     runner.N_EPISODES = args.episodes
     runner.XI = args.xi
+    runner.RESULTS_DIR = args.save_dir
     runner.ATTACKER_TYPES = [a.strip() for a in args.attackers.split(",") if a.strip()]
     runner.init(submission_data_url=args.model, submission_id="local")
 
     all_metrics = runner._run_complete_evaluation("local", "local")
 
-    print(f"\nATM robustness/resilience KPIs  (env={runner.ATTACKER_TYPES}, "
+    # The environment id belongs in this header: it is the single most important thing
+    # needed to read the numbers, and the two ATM tasks are not comparable.
+    print(f"\nATM robustness/resilience KPIs  (env={ENV_ID}, "
           f"episodes={args.episodes}, xi={args.xi})")
+    print(f"attackers: {', '.join(runner.ATTACKER_TYPES)}")
     print(f"agent: {args.model or 'StraightLineDefender (reference, not a submission)'}\n")
     for tid, info in wanted:
         print(f"  {info['name']:<58} {all_metrics[info['metric_key']]:.4f}")

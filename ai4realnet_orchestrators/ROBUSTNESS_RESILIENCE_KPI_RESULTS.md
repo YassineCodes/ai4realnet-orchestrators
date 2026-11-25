@@ -3,6 +3,33 @@
 KPI-DF-069, FF-070, SF-071, SF-072, VF-073, AF-074, DF-075, RF-076, SF-077 and RF-078,
 measured in the three domains against their reference agents.
 
+> ## Superseded — do not quote these numbers
+>
+> Every column below predates a correction that changes values. Kept for provenance.
+>
+> **railway** — superseded twice. These are the 50-episode numbers taken *before* the
+> four pipeline fixes (attack decision taken once and recorded as applied; corruption
+> types resolved against the observation the policy reads; severity axis; query-based
+> attacker scoring against the policy's own observation). The 200-episode post-fix table
+> in `railway/README_robustness_resilience_kpi_069_077.md` replaced them, measured over
+> 200 episodes after the env-time alignment and the queried-train masking. Compare for
+> scale: GEPerturb's `action_change_freq` is 0.0696 here against 0.4184 post-fix.
+>
+> **atm** — measured on `StaticObstacleEnv-v0`, which is **not** the AI4REALNET task.
+> The domain now defaults to `StaticObstacleCREnv-v1` (12 observation keys and 48
+> scalars against v0's 7 and 43; 5 restricted areas plus 5 intruders against 10
+> restricted areas), and the v0 reference agent cannot act on v1. A v1 policy has since
+> been trained to the same recipe for 2,000,000 timesteps and the campaign re-run over
+> 200 episodes; the current table is in
+> `atm/README_robustness_resilience_kpi_069_077.md`. These numbers were also produced
+> with the old every-feature random baseline, which saturated KPI-VF-073 and KPI-FF-070
+> at 1.0000 for every attacker and so could not rank them; the current baseline reads
+> KPI-VF-073 0.4354.
+>
+> **power_grid** — not re-run here, and the columns are not self-consistent: KPI-FF-070
+> (8.6651) and KPI-SF-071 (−3.4262) fall outside their declared [0, 1] ranges, so the row
+> should not be quoted until that domain re-runs it.
+
 **Run configuration**
 
 | | power_grid | railway | atm |

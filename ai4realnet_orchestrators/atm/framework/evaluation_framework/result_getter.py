@@ -123,7 +123,11 @@ class result_getter:
             f"Min episode time:  {min(episode_times):.1f}s\n"
             f"Max episode time:  {max(episode_times):.1f}s\n"
             f"Avg episode time:  {sum(episode_times)/len(episode_times):.1f}s\n"
-            f"{'=' * 80}\n"
+            f"{'=' * 80}\n",
+            # Flushed so a phase boundary survives the process being killed.
+            # Without it the per-episode TIMER lines (which do flush) are the last
+            # thing in the log and a phase that finished looks like one that stopped.
+            flush=True,
         )
 
         data_dict = {
@@ -144,6 +148,36 @@ class result_getter:
     # ------------------------------------------------------------------
     # Metrics calculation
     # ------------------------------------------------------------------
+
+
+    def _load_or_run(self, pickle_path, attacker, label):
+        """
+        Reuse a phase's archive only when it holds the episode count this run asks for.
+
+        The resume path exists so that a campaign killed partway through does not repeat
+        the phases it already finished, which is what --save-dir makes possible. It
+        reused whatever pickle it found, with no check on what was in it. That is wrong
+        whenever the save directory holds a run of a different length: the KPIs would be
+        computed with a baseline of one size against perturbed phases of another, and
+        nothing would say so. A mismatch re-runs the phase instead.
+
+        A pickle truncated by a kill mid-write fails loudly in pickle.load, so the case
+        that needs catching is the quiet one: a complete archive of the wrong length.
+        """
+        if os.path.exists(pickle_path):
+            with open(pickle_path, "rb") as f:
+                data = pickle.load(f)
+            have = len(data.get("rewards", []))
+            if have == self.n_episodes:
+                print(f"[SKIPPED] {pickle_path} already holds {have} episodes, loading...",
+                      flush=True)
+                return data
+            print(f"[REDO] {pickle_path} holds {have} episodes but this run asks for "
+                  f"{self.n_episodes}; re-running {label} rather than mixing lengths.",
+                  flush=True)
+
+        print(f"[RUNNING] Running episodes for {label}...", flush=True)
+        return self.run_episodes(pickle_path, attacker)
 
     def calculate_metrics(self):
         """
@@ -167,13 +201,7 @@ class result_getter:
 
         # ---- Unperturbed baseline ----
         unperturbed_pickle = os.path.join(self.save_folder, "unperturbed.pkl")
-        if os.path.exists(unperturbed_pickle):
-            print(f"[SKIPPED] {unperturbed_pickle} already exists, loading...")
-            with open(unperturbed_pickle, "rb") as f:
-                unperturbed_data = pickle.load(f)
-        else:
-            print("[RUNNING] Running unperturbed episodes...")
-            unperturbed_data = self.run_episodes(unperturbed_pickle, attacker=None)
+        unperturbed_data = self._load_or_run(unperturbed_pickle, None, "the unperturbed baseline")
 
         unperturbed_metrics = metrics(
             unperturbed_data,
@@ -188,13 +216,7 @@ class result_getter:
 
         for attacker in self.attackers:
             save_pickle = os.path.join(self.save_folder, attacker.pickle_file)
-            if os.path.exists(save_pickle):
-                print(f"[SKIPPED] {save_pickle} already exists, loading...")
-                with open(save_pickle, "rb") as f:
-                    data_dict = pickle.load(f)
-            else:
-                print(f"[RUNNING] Running episodes for {attacker.model_name}...")
-                data_dict = self.run_episodes(save_pickle, attacker)
+            data_dict = self._load_or_run(save_pickle, attacker, attacker.model_name)
 
             m = metrics(
                 data_dict,
