@@ -1,0 +1,48 @@
+{
+  "env_id": "StaticObstacleCREnv-v1",
+  "env_provenance": {
+    "env_id": "StaticObstacleCREnv-v1",
+    "distribution": "bluesky-gym 0.0.0+ai4realnet",
+    "module": "bluesky_gym.envs.static_obstacle_cr_env",
+    "module_file": "/home/ubuntu/bluesky-gym/bluesky_gym/envs/static_obstacle_cr_env.py",
+    "module_sha256": "ce3f7b2e30822908d632d188dee0c675b787afb09d271c1c6557ff6db17ba544"
+  },
+  "algorithm": "SAC",
+  "policy": "MultiInputPolicy",
+  "requested_timesteps": 2000000,
+  "completed_timesteps": 2000000,
+  "interrupted": null,
+  "seed": 42,
+  "max_episode_steps": 200,
+  "learning_rate": 0.0003,
+  "learning_starts": 10000,
+  "wall_seconds": 39327.2,
+  "objective": "single scalar reward: REACH_REWARD + DRIFT_PENALTY*drift + RESTRICTED_AREA_INTRUSION_PENALTY*intrusions",
+  "versions": {
+    "stable_baselines3": "2.7.0",
+    "gymnasium": "1.1.1",
+    "numpy": "1.24.3",
+    "python": "3.10.20",
+    "platform": "Linux-6.8.0-149-generic-x86_64-with-glibc2.39"
+  },
+  "model_file": "model.zip",
+  "model_sha256": "687608fe6f18a4c4c027c323fbd2ade9f0a214aee27aa32294c29e4899d8dbd4",
+  "eval": {
+    "episodes": 10,
+    "mean_return": 6.582270782659071,
+    "std_return": 6.566673096228886,
+    "mean_length": 50.8,
+    "returns": [
+      1.214,
+      -1.706,
+      11.658,
+      13.202,
+      11.536,
+      11.783,
+      10.896,
+      -4.028,
+      9.901,
+      1.366
+    ]
+  }
+}
