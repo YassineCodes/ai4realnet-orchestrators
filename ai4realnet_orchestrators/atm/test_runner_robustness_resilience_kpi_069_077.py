@@ -69,6 +69,38 @@ ENV_ID = os.environ.get("AI4REALNET_ATM_ENV_ID", "StaticObstacleCREnv-v1")
 MAX_EPISODE_STEPS = int(os.environ.get("AI4REALNET_ATM_MAX_EPISODE_STEPS", "200"))
 
 
+def _ensure_envs_registered():
+    """
+    Make the registry able to resolve ENV_ID, whatever order a caller asks in.
+
+    Both resolvers below go through gymnasium's registry, which is empty until the fork
+    is imported and register_envs() has run. _initialize_environment() does that, but it
+    runs after the provenance record is taken, so resolving on the caller's ordering is
+    not safe: the record came out empty in exactly the run whose numbers get published.
+
+    The reward constants resolve the same way and are read after initialisation, so they
+    are correct today. Their fallback is the v1 set, which for the configured task
+    happens to equal what the module holds -- but ENV_ID is overridable, and on any other
+    task the fallback would apply v1's constants to an environment that may not award
+    them, changing the scale KPI-DF-069 is normalised by without saying so. Only call
+    order keeps that from happening, which is not a property worth relying on.
+
+    Registration is idempotent, so establishing it here fixes both callers and any later
+    one instead of each call site remembering to.
+
+    Raises if the fork is unavailable; both callers already treat that as the documented
+    fallback case, since this module is imported for orchestrator registration on hosts
+    that have no simulator.
+    """
+    from _bluesky_compat import ensure_warnings_deprecated
+    ensure_warnings_deprecated()
+
+    import bluesky_gym
+    import bluesky_gym.envs  # noqa: F401  (registers the envs)
+
+    bluesky_gym.register_envs()
+
+
 def env_reward_constants(env_id=None):
     """
     Reward constants of the environment ENV_ID resolves to.
@@ -87,8 +119,11 @@ def env_reward_constants(env_id=None):
     env_id = env_id or ENV_ID
     restricted, aircraft = -5.0, -5.0
     try:
+        _ensure_envs_registered()
         from gymnasium.envs.registration import registry
         spec = registry.get(env_id)
+        if spec is None:
+            raise KeyError(f"{env_id} is not in the registry")
         module_path = str(spec.entry_point).split(":")[0]
         mod = importlib.import_module(module_path)
         restricted = float(getattr(mod, "RESTRICTED_AREA_INTRUSION_PENALTY", restricted))
@@ -121,8 +156,11 @@ def env_provenance(env_id=None):
     out = {"env_id": env_id, "distribution": "unknown",
            "module": "unknown", "module_file": "unknown", "module_sha256": "unknown"}
     try:
+        _ensure_envs_registered()
         from gymnasium.envs.registration import registry
         spec = registry.get(env_id)
+        if spec is None:
+            raise KeyError(f"{env_id} is not in the registry")
         module_path = str(spec.entry_point).split(":")[0]
         out["module"] = module_path
         mod = importlib.import_module(module_path)
