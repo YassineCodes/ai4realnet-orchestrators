@@ -23,9 +23,10 @@ class RLPerturbationAgent(BasePerturbationAgent):
     Online value-based perturbation agent.
 
     No pre-trained attacker checkpoint exists for ATM (power_grid loads SAC.zip / PPO.zip /
-    trained_rlpa_0.pth), so this learns during evaluation, as the railway attackers do: it
-    keeps a value per (feature, index) - how much budgeted noise there moved the defender's
-    action - and picks epsilon-greedily from it.
+    trained_rlpa_0.pth), so this learns during the evaluation: it keeps a value per
+    (feature, index) - how much budgeted noise there moved the defender's action - and
+    picks epsilon-greedily from it. Attacker strength is therefore coupled to campaign
+    length, which the README records.
 
     `factor` scales the budget as a percentage of the observation scale, mirroring the
     power-grid SACAttacker's `factor` (5 / 10) used for SAC_5 / SAC_10.
@@ -65,18 +66,55 @@ class RLPerturbationAgent(BasePerturbationAgent):
             logger.error("[RLPerturb] defender query failed: %s" % e)
             return out
 
-        # Credit the previous step's choice with the effect it actually produced.
-        if self._last is not None:
-            prev_slots, prev_base = self._last
-            effect = float(np.linalg.norm(base - prev_base))
-            for s in prev_slots:
-                self._values[s] = (1 - self.lr) * self._values.get(s, 0.0) + self.lr * effect
-
         chosen = self._choose(slots)
-        for key, pos in chosen:
-            sign = 1.0 if self._rng.random() < 0.5 else -1.0
+        signs = [1.0 if self._rng.random() < 0.5 else -1.0 for _ in chosen]
+
+        # PER-SLOT CREDIT, measured against the clean observation at this same step.
+        #
+        # The credit is the effect of THIS step's perturbation on THIS step's decision.
+        #
+        # Crediting ||act(obs_t) - act(obs_{t-1})|| instead, the change in the defender's
+        # action between consecutive steps attached to the previous step's slots, does not
+        # measure a perturbation: the defender's action moves anyway as the aircraft fly,
+        # so the signal mixes "my noise moved the policy" with "the world moved on".
+        # Measured against a defender that drifts by 1.0 a step while the attack is worth
+        # 0.1, that value reads 0.95 instead of 0.10 -- ten times the attack, almost all
+        # of it the world.
+        #
+        # Same-step credit alone is not enough, because n_sample slots are perturbed at
+        # once and one shared scalar cannot be divided between them. Values inside a
+        # chosen set then stay equal, the incumbent set stays top-n for ever, and the
+        # table cannot tell a slot that moved the policy from the passengers perturbed
+        # beside it. Measured on a fixture with a single causal slot, shared credit gave
+        # causal 0.0995 against a top passenger of 0.0981, a margin of 1.4 percent, and
+        # the shared and same-step signals chose identical slots at 120 of 120 steps.
+        #
+        # So each chosen slot is probed ALONE against the clean observation and credited
+        # with its own effect, which scores a passenger at exactly 0. The attack applied
+        # to the environment is unchanged -- the same n_sample slots with the same signs,
+        # verified over 200 episodes as the same slot count per step and the same budget
+        # ceiling -- and only what is learned from it changes. Cost is 1 + n_sample
+        # defender queries per step instead of 1, the same kind of per-feature query
+        # budget GEPerturb already spends, and measured 11 to 18 percent of wall clock.
+        for (key, pos), sign in zip(chosen, signs):
+            probe_obs = self._copy(obs)
+            probe_obs[key].reshape(-1)[pos] += sign * self.xi
+            try:
+                probe = np.asarray(self.agent.act(probe_obs), dtype=np.float64).ravel()
+            except Exception as e:
+                logger.error("[RLPerturb] per-slot query failed for %s[%d]: %s"
+                             % (key, pos, e))
+                continue
+            effect = float(np.linalg.norm(probe - base))
+            self._values[(key, pos)] = ((1 - self.lr) * self._values.get((key, pos), 0.0)
+                                        + self.lr * effect)
+
+        # The attack itself. Probes above are never applied and are never recorded as a
+        # realised perturbation, because they do not reach the environment.
+        for (key, pos), sign in zip(chosen, signs):
             out[key].reshape(-1)[pos] += sign * self.xi
             self._record(key, np.array([sign * self.xi]))
+
         self._last = (chosen, base)
         return out
 
