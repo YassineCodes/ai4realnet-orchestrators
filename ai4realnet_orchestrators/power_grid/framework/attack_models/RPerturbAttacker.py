@@ -29,6 +29,10 @@ class RPerturbAttacker(BaseAttackerClass):
 
         # Random perturbation model working on the environments observation space
         self.model = RandomPerturbationAgent(self.env.observation_space, **kwargs)
+        super().__init__(name=self.model_name)
+
+    def load(self, path):
+        pass
 
 
     def perturb(self, obs):

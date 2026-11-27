@@ -4,11 +4,12 @@ Combined KPI implementations for the AI4REALNET Power Grid domain.
 
 ## Overview
 
-This module provides the base `PowerGridTestRunner` class and implementations for 15 KPIs across four categories:
+This module provides the base `PowerGridTestRunner` class and implementations for 16 KPIs across five categories:
 
 | Category | KPIs | Method |
 |----------|------|--------|
 | Operational | 008, 012, 036 | ScoreL2RPN2023 |
+| Scalability | 051 | Timed episode rollout |
 | Reliability | 052, 057 | Domain shift framework |
 | Robustness | 069-073 | Multi-attacker framework |
 | Robustness | 058 | Operator overrides |
@@ -22,6 +23,11 @@ This module provides the base `PowerGridTestRunner` class and implementations fo
 | `TestRunner_KPI_AF_008_Power_Grid` | Assistant alert accuracy | Alert confidence score |
 | `TestRunner_KPI_CF_012_Power_Grid` | Carbon intensity | Non-renewable energy score |
 | `TestRunner_KPI_OF_036_Power_Grid` | Operation score | Grid operation performance |
+
+### Scalability KPIs (Benchmark: 16706c82-75df-4969-932d-a7f5c941eca2)
+| Class | KPI | Description |
+|-------|-----|-------------|
+| `TestRunner_KPI_AF_051_Power_Grid` | AI-agent scalability testing | Wall-clock seconds per environment timestep |
 
 ### Reliability & Domain Shift KPIs (Benchmark: 43040944-39ac-47c9-b91d-bc8ca5693b3c)
 | Class | KPI | Description |
@@ -58,6 +64,7 @@ PowerGridTestRunner (Base Template)
 
 Specialized Runners (Inherit Base)
 ├── OperationalTestRunner ──────────── Uses ScoreL2RPN2023
+├── ScalabilityTestRunner ──────────── Times one episode rollout
 ├── ReliabilityTestRunner ──────────── Uses Domain Shift framework
 └── RobustnessResilienceTestRunner ─── Multi-attacker framework:
     ├── Loads 7 attackers
@@ -98,6 +105,7 @@ power_grid/
 │   └── scoring-config.json  # For operational KPIs
 ├── power_grid_test_runner.py          # Base classes and shared utilities
 ├── operational_test_runner.py         # Operational KPIs (008, 012, 036)
+├── test_runner_kpi_af_051_power_grid.py # Scalability KPI (051)
 ├── reliability_test_runner.py         # Reliability KPIs (052, 057)
 ├── robustness_resilience_test_runner.py # Robustness & Resilience (069-077)
 └── test_runner_kpi_rs_058_power_grid.py # Robustness to Operator Input KPI (058)

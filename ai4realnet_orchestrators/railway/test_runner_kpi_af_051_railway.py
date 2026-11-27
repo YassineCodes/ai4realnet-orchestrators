@@ -16,7 +16,12 @@ SUDO = os.environ.get("SUDO", "true").lower() == "true"
 
 DATA_VOLUME_MOUNTPATH = os.environ.get("DATA_VOLUME_MOUNTPATH", "/app/data")
 SCENARIOS_VOLUME_MOUNTPATH = os.environ.get("SCENARIOS_VOLUME_MOUNTPATH", "/app/scenarios")
-RAILWAY_ORCHESTRATOR_RUN_LOCAL = os.environ.get("RAILWAY_ORCHESTRATOR_RUN_LOCAL", False)
+RAILWAY_ORCHESTRATOR_RUN_LOCAL = os.environ.get("RAILWAY_ORCHESTRATOR_RUN_LOCAL", "false").lower() in ("1", "true")
+
+# Fixed CPU budget for the timed container, so that every submission gets the same compute.
+CPUS = os.environ.get("KPI_AF_051_CPUS", "4")
+# Number of one-step start-up runs per scenario; the minimum is used, as timing noise only ever adds time.
+STARTUP_REPEATS = int(os.environ.get("KPI_AF_051_STARTUP_REPEATS", "3"))
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +35,9 @@ class TestRunner_KPI_AF_051_Railway(AbtractTestRunnerRailway):
 
   def exec(self, generate_policy_args: List[str], scenario_id: str, submission_id: str, subdir: str):
     """Override to time only the simulation, excluding Docker setup overhead."""
-    if DATA_VOLUME:
+    if not RAILWAY_ORCHESTRATOR_RUN_LOCAL:
+      if not DATA_VOLUME or not SCENARIOS_VOLUME:
+        raise RuntimeError("DATA_VOLUME and SCENARIOS_VOLUME must be set when running via Docker")
       # Setup (not timed): mkdir, chmod, pull
       args = ["docker", "run", "--rm", "-v", f"{DATA_VOLUME}:/vol", "alpine:latest", "mkdir", "-p", f"/vol/{subdir}"]
       exec_with_logging(args if not SUDO else ["sudo"] + args)
@@ -44,6 +51,7 @@ class TestRunner_KPI_AF_051_Railway(AbtractTestRunnerRailway):
       args = [
                "docker", "run",
                "--rm",
+               f"--cpus={CPUS}",
                "-v", f"{DATA_VOLUME}:{DATA_VOLUME_MOUNTPATH}",
                "-v", f"{SCENARIOS_VOLUME}:{SCENARIOS_VOLUME_MOUNTPATH}",
                "--security-opt=no-new-privileges",
@@ -52,9 +60,9 @@ class TestRunner_KPI_AF_051_Railway(AbtractTestRunnerRailway):
                self.submission_data_url,
                "flatland-trajectory-generate-from-policy",
              ] + generate_policy_args
-      start = time.time()
+      start = time.perf_counter()
       exec_with_logging(args if not SUDO else ["sudo"] + args, log_level_stdout=logging.DEBUG)
-      self._last_simulation_time = time.time() - start
+      self._last_simulation_time = time.perf_counter() - start
 
       # Cleanup (not timed)
       args = ["docker", "run", "--rm", "-v", f"{DATA_VOLUME}:/vol", "alpine:latest", "chmod", "-R", "a=rwx",
@@ -62,13 +70,13 @@ class TestRunner_KPI_AF_051_Railway(AbtractTestRunnerRailway):
       exec_with_logging(args if not SUDO else ["sudo"] + args)
     else:
       from flatland.trajectories.policy_runner import generate_trajectory_from_policy
-      Path(f"{DATA_VOLUME_MOUNTPATH}/{subdir}").mkdir(parents=True, exist_ok=False)
+      Path(f"{DATA_VOLUME_MOUNTPATH}/{subdir}").mkdir(parents=True, exist_ok=True)
       try:
-        start = time.time()
+        start = time.perf_counter()
         generate_trajectory_from_policy(generate_policy_args)
-        self._last_simulation_time = time.time() - start
+        self._last_simulation_time = time.perf_counter() - start
       except SystemExit as e_info:
-        self._last_simulation_time = time.time() - start
+        self._last_simulation_time = time.perf_counter() - start
         if e_info.code != 0:
           print(e_info)
         assert e_info.code == 0
@@ -76,24 +84,43 @@ class TestRunner_KPI_AF_051_Railway(AbtractTestRunnerRailway):
   def run_scenario(self, scenario_id: str, submission_id: str):
     env_path, complexity_metrics = TestRunner_KPI_AF_051_Railway.load_scenario_data(scenario_id)
 
-    data_dir = f"{DATA_VOLUME_MOUNTPATH}/{submission_id}/{self.test_id}/{scenario_id}"
+    subdir = f"{submission_id}/{self.test_id}/{scenario_id}"
+    data_dir = f"{DATA_VOLUME_MOUNTPATH}/{subdir}"
     generate_policy_args = [
-      "--data-dir", data_dir,
       "--rewards-pkg", "flatland.envs.rewards", "--rewards-cls", "PunctualityRewards",
       "--ep-id", scenario_id,
       "--env-path", f"{SCENARIOS_VOLUME_MOUNTPATH}/{env_path}",
+      "--snapshot-interval", "0",
     ]
-    self.exec(generate_policy_args, scenario_id, submission_id, f"{submission_id}/{self.test_id}/{scenario_id}")
-    total_time_seconds = self._last_simulation_time
-    logger.info(f"total_time_seconds: {total_time_seconds}")
 
-    trajectory = Trajectory.load_existing(data_dir=Path(data_dir), ep_id=scenario_id)
+    # Start-up (container start, imports, model and env loading, first step): minimum over repeated one-step runs.
+    startup_times = []
+    for k in range(STARTUP_REPEATS):
+      self.exec(["--data-dir", f"{data_dir}/startup_{k}", "--end-step", "1"] + generate_policy_args, scenario_id, submission_id, f"{subdir}/startup_{k}")
+      startup_times.append(self._last_simulation_time)
+    startup_seconds = min(startup_times)
+    logger.info(f"startup_seconds: {startup_seconds}")
+
+    # Start-up and full run are separate executions, so on short scenarios noise can make the full run no longer than start-up; retry then.
+    # Each retry needs its own (empty) data dir, as flatland appends to an existing trajectory.
+    for k in range(STARTUP_REPEATS):
+      run_subdir = subdir if k == 0 else f"{subdir}/retry_{k}"
+      self.exec(["--data-dir", f"{DATA_VOLUME_MOUNTPATH}/{run_subdir}"] + generate_policy_args, scenario_id, submission_id, run_subdir)
+      total_time_seconds = self._last_simulation_time
+      logger.info(f"total_time_seconds: {total_time_seconds}")
+      if total_time_seconds > startup_seconds:
+        break
+    else:
+      raise RuntimeError(f"full run ({total_time_seconds:.3f} s) not longer than start-up ({startup_seconds:.3f} s), timing is invalid")
+
+    trajectory = Trajectory.load_existing(data_dir=Path(f"{DATA_VOLUME_MOUNTPATH}/{run_subdir}"), ep_id=scenario_id)
     num_agents = trajectory.trains_rewards_dones_infos["agent_id"].max() + 1
     num_timesteps = len(trajectory.trains_rewards_dones_infos) // num_agents
     logger.info(f"num_timesteps: {num_timesteps}, num_agents: {num_agents}")
 
-    avg_time_per_timestep = total_time_seconds / num_timesteps
-    logger.info(f"avg_time_per_timestep: {avg_time_per_timestep}")
+    # Steady-state time per step: start-up and the first step are removed, the remaining steps share the rest.
+    time_per_step = (total_time_seconds - startup_seconds) / max(num_timesteps - 1, 1)
+    logger.info(f"time_per_step: {time_per_step}")
 
     # punctuality and success rate (same pattern as KPI-PF-026)
     df_trains_arrived = trajectory.trains_arrived
@@ -108,14 +135,9 @@ class TestRunner_KPI_AF_051_Railway(AbtractTestRunnerRailway):
     self.upload_and_empty_local(submission_id=submission_id, scenario_id=scenario_id)
 
     return {
-      'primary': avg_time_per_timestep,
-      'total_time_seconds': total_time_seconds,
-      'num_timesteps': float(num_timesteps),
-      'avg_time_per_timestep': avg_time_per_timestep,
+      'primary': time_per_step,
       'punctuality': punctuality,
       'success_rate': success_rate,
-      'n_cities': float(complexity_metrics['n_cities']),
-      'n_agents': float(complexity_metrics['n_agents']),
     }
 
   @staticmethod

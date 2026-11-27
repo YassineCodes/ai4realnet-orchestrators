@@ -17,6 +17,9 @@ from ai4realnet_orchestrators.power_grid.reliability_test_runner import (
     TestRunner_KPI_DF_052_Power_Grid,
     TestRunner_KPI_DF_057_Power_Grid
 )
+from ai4realnet_orchestrators.power_grid.test_runner_kpi_af_051_power_grid import (
+    TestRunner_KPI_AF_051_Power_Grid
+)
 from ai4realnet_orchestrators.power_grid.robustness_resilience_test_runner import (
     TestRunner_KPI_DF_069_Power_Grid,
     TestRunner_KPI_FF_070_Power_Grid,
@@ -191,15 +194,11 @@ power_grid_orchestrator = Orchestrator(
         # "5af6ffd9-b0a6-4f53-94bf-058fc1383ecd": TestRunner_KPI_AF_050_Power_Grid(
         #     test_id="5af6ffd9-b0a6-4f53-94bf-058fc1383ecd", scenario_ids=['7d2d75c8-49e0-433d-809d-b0811c8e2f06'], benchmark_id="16706c82-75df-4969-932d-a7f5c941eca2"
         # ),
-        #
-        # # KPI-AF-051: AI-Agent Scalability Testing (Power Grid)
-        # "1409dbf6-0f66-4570-97df-fda84c46c71d": TestRunner_KPI_AF_051_Power_Grid(
-        #     test_id="1409dbf6-0f66-4570-97df-fda84c46c71d", scenario_ids=[
-        #         '5950ad04-76e5-4c4d-aa44-435d01d250eb',  # l2rpn_case14_sandbox
-        #         # '6037056e-f720-4ec6-b867-24cd3483cc0c',  # ai4realnet_small
-        #         # 'c2413ae7-e973-4846-b61b-d404cb518dfb',  # ai4realnet_large
-        #     ], benchmark_id="16706c82-75df-4969-932d-a7f5c941eca2"
-        # ),
+
+        # KPI-AF-051: AI-Agent Scalability Testing (Power Grid)
+        "1409dbf6-0f66-4570-97df-fda84c46c71d": TestRunner_KPI_AF_051_Power_Grid(
+            test_id="1409dbf6-0f66-4570-97df-fda84c46c71d", scenario_ids=['547f8244-d091-40da-892d-ee24a26ee29f'], benchmark_id="16706c82-75df-4969-932d-a7f5c941eca2"
+        ),
 
         # KPI-DF-052: Domain shift adaptation time (Power Grid)
         "855729a4-6729-4ae2-bb8d-443ef4867d94": TestRunner_KPI_DF_052_Power_Grid(

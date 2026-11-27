@@ -40,14 +40,20 @@ class RLPerturbAttacker(BaseAttackerClass):
             self.env = env
             self.agent = agent
 
-            # Load RL perturbation model 
+            # Load RL perturbation model
             self.model = self.load_model()
             self.model.load_model(self.model_path, self.target_path)
             print("[DEBUG] loaded model inside the class")
+            super().__init__(name=self.model_name)
         except Exception as e:
             print("[ERROR] RLPerturbAttacker init failed:", e)
             print(traceback.format_exc())
             raise
+
+    def load(self, path):
+        self.model_path = str(path)
+        self.model = self.load_model()
+        self.model.load_model(self.model_path, self.target_path)
 
 
 

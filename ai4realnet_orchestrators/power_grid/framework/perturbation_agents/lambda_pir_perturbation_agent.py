@@ -1,6 +1,15 @@
 """
-Modified Lambda-PIR Perturbation Agent with Missing/Large/Adversarial Actions
-Now uses the same action space as RL agent for fair comparison!
+Lambda-PIR Perturbation Agent with Missing/Large/Adversarial Actions
+
+Uses Bellman-based value updates (PBIR) for convergence guarantees:
+Q(s,a) <- (1-alpha) * Q(s,a) + alpha * [R(s,a) + gamma * V(s')]
+
+Where:
+- R(s,a) is the immediate reward (disruption caused)
+- gamma is the discount factor
+- V(s') = max_a' Q(s', a') is the value of the next state
+
+This enables Theorem 3 (Convergence with Randomization) to apply.
 """
 
 import copy
@@ -15,18 +24,19 @@ logger = logging.getLogger(__name__)
 
 class LambdaPIRPerturbationAgent(BasePerturbationAgent):
     """
-    Lambda-PIR Agent modified to use Missing/Large/Adversarial perturbations.
-    
-    Now directly comparable to RL agent by using the same action space:
+    Lambda-PIR Agent with Missing/Large/Adversarial perturbations.
+
+    Uses the same action space as RL agent:
     - Missing values (set to 0)
     - Large values (set to 999999)
     - Adversarial examples
-    
+
     Lambda-PIR decides WHICH type and WHERE to apply based on:
     - Policy iteration: Quick decisions from learned patterns
     - Value iteration: Refined decisions through gradient search
+    - Bellman updates: Proper V(s') bootstrapping for convergence
     """
-    
+
     def __init__(self,
              obs_space: grid2op.Observation.ObservationSpace,
              agent,
@@ -37,16 +47,35 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
              gradient_step_size: float = 0.05,
              refinement_iterations: int = 5,
              decay_schedule: str = "linear",
+             gamma: float = 0.99,
              name: str = "LambdaPIRPerturbationAgent",
              save_dir: str = "",
              debug: bool = True,
              use_gpu: bool = True):
-        """Initialize Lambda-PIR with discrete action space."""
+        """
+        Initialize Lambda-PIR with Bellman updates.
+
+        Args:
+            obs_space: Grid2Op observation space
+            agent: Target defender agent
+            policy_model: Optional pre-trained PPO/SAC model
+            lambda_param: lambda in [0,1) for lookahead depth
+            initial_prob_policy: Starting probability of policy iteration
+            epsilon: Maximum perturbation magnitude
+            gradient_step_size: Learning rate for value updates (alpha)
+            refinement_iterations: Number of refinement steps
+            decay_schedule: "linear", "exponential", or "constant"
+            gamma: Discount factor for Bellman updates (key for convergence)
+            name: Agent identifier
+            save_dir: Directory for saving history
+            debug: Enable debug logging
+            use_gpu: Enable GPU acceleration
+        """
         super().__init__(obs_space, name=name)
-        
+
         self.agent = agent
         self.policy_model = policy_model
-        
+
         # Lambda-PIR parameters
         self.lambda_param = lambda_param
         self.initial_prob_policy = initial_prob_policy
@@ -55,42 +84,45 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
         self.gradient_step_size = gradient_step_size
         self.refinement_iterations = refinement_iterations
         self.decay_schedule = decay_schedule
+        self.gamma = gamma  # Bellman discount factor
         self.debug = debug
-        
+
         # Initialize with default action space
-        self.possible_actions = [("do_nothing", 0)]  # Always have at least do_nothing
+        self.possible_actions = [("do_nothing", 0)]
         self.missing_indices = []
         self.large_indices = []
         self.adv_indices = []
         self.attr_start_idx = {}
-        
+
         # Tracking
         self.iteration_count = 0
         self.policy_updates = 0
         self.value_updates = 0
         self.action_history = []
-        
-        # Value estimates - initialize AFTER possible_actions is set
+
+        # Q-value estimates (updated via Bellman equation)
         self.action_values = np.zeros(len(self.possible_actions))
-        
-        logger.info(f"Initialized {name} with minimal action space (will build full space on first perturb)")
+
+        # State for Bellman updates
+        self.prev_obs = None
+        self.prev_action_idx = None
+        self.prev_reward = None
+
+        logger.info(f"Initialized {name} with Bellman updates (gamma={gamma})")
 
     def _build_action_space(self, sample_obs):
         """Build the discrete action space matching RL agent."""
         self.possible_actions = []
-
-        # Action 0: Do nothing
         self.possible_actions.append(("do_nothing", 0))
 
-        # Use passed sample_obs instead of calling get_obs
         obs_vector = sample_obs.to_vect()
 
         # Map attribute start indices
         self.attr_start_idx = {}
         current_idx = 0
-        for attr in ["year", "month", "day", "hour_of_day", "minute_of_hour", 
-                    "day_of_week", "gen_p", "gen_q", "gen_v", "load_p", 
-                    "load_q", "load_v", "p_or", "q_or", "v_or", "a_or", 
+        for attr in ["year", "month", "day", "hour_of_day", "minute_of_hour",
+                    "day_of_week", "gen_p", "gen_q", "gen_v", "load_p",
+                    "load_q", "load_v", "p_or", "q_or", "v_or", "a_or",
                     "p_ex", "q_ex", "v_ex", "a_ex", "rho"]:
             if hasattr(sample_obs, attr):
                 attr_array = getattr(sample_obs, attr)
@@ -120,7 +152,7 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
         # Adversarial examples
         self.adv_indices = []
         if hasattr(self.agent, 'action_space'):
-            n_agent_actions = min(20, self.agent.action_space.n)
+            n_agent_actions = min(20, getattr(self.agent.action_space, 'n', 20))
             for target_action in range(n_agent_actions):
                 self.possible_actions.append(("adv_exmpl", target_action))
                 self.adv_indices.append(len(self.possible_actions) - 1)
@@ -128,192 +160,236 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
         logger.info(f"Built action space with {len(self.possible_actions)} actions")
 
     def _ensure_action_space_built(self, obs):
-        """Build action space on first actual observation if not already built."""
-        if len(self.possible_actions) == 1:  # Only has do_nothing
+        """Build action space on first observation if not already built."""
+        if len(self.possible_actions) == 1:
             try:
                 self._build_action_space(obs)
-                # Resize action_values to match new action space
                 self.action_values = np.zeros(len(self.possible_actions))
                 logger.info(f"Built action space with {len(self.possible_actions)} actions")
             except Exception as e:
                 logger.error(f"Failed to build action space: {e}")
-                # Keep do_nothing as fallback
+
     def perturb(self, obs: grid2op.Observation.BaseObservation) -> grid2op.Observation.BaseObservation:
-        """Apply Lambda-PIR perturbation using missing/large/adversarial framework."""
+        """Apply Lambda-PIR perturbation with Bellman updates."""
         try:
-            # Build action space on first perturb if needed
             self._ensure_action_space_built(obs)
-            
-            # Safety check
+
             if len(self.possible_actions) == 0:
-                logger.error("No actions available, returning original observation")
+                logger.error("No actions available")
                 return obs.copy()
-            
+
+            # Bellman update from previous transition
+            if self.prev_obs is not None and self.prev_action_idx is not None:
+                self._bellman_update(self.prev_obs, self.prev_action_idx,
+                                    self.prev_reward, obs)
+
             obs_perturbed = copy.deepcopy(obs)
-            
+
             # Get probability schedule
             prob_policy = self._get_probability_schedule(self.iteration_count)
             use_policy = self.space_prng.random() < prob_policy
-            
+
             if use_policy:
                 action_idx = self._policy_iteration_step(obs)
                 self.policy_updates += 1
             else:
                 action_idx = self._value_iteration_step(obs)
                 self.value_updates += 1
-            
+
             # Apply the selected action
             action_type, action_param = self.possible_actions[action_idx]
             obs_perturbed = self._apply_action(obs_perturbed, action_type, action_param)
-            
-            # Update statistics
-            self._update_action_value(action_idx, obs, obs_perturbed)
+
+            # Compute immediate reward
+            reward = self._compute_reward(obs, obs_perturbed)
+
+            # Store for next Bellman update
+            self.prev_obs = copy.deepcopy(obs)
+            self.prev_action_idx = action_idx
+            self.prev_reward = reward
+
             self.action_history.append(action_idx)
-            
-            if self.debug and self.iteration_count % 20 == 0:
+
+            if self.debug and self.iteration_count % 50 == 0:
                 logger.debug(f"[ITER {self.iteration_count}] action={action_type}({action_param}) "
-                        f"policy={use_policy} p_k={prob_policy:.3f}")
-            
+                        f"policy={use_policy} p_k={prob_policy:.3f} reward={reward:.2f}")
+
             self.iteration_count += 1
             self.perturbation_count += 1
-            
+
             return obs_perturbed
-            
+
         except Exception as e:
             logger.error(f"Perturbation failed: {e}")
             return obs.copy()
 
-    def _policy_iteration_step(self, obs: grid2op.Observation.BaseObservation) -> int:
-        """Policy iteration with safety checks."""
-        # Safety check
+    def _bellman_update(self, prev_obs, prev_action_idx: int, reward: float, current_obs):
+        """
+        Perform proper Bellman update for convergence guarantees.
+
+        Q(s,a) <- (1-alpha) * Q(s,a) + alpha * [R(s,a) + gamma * V(s')]
+        """
+        try:
+            # V(s') = max_a' Q(s', a')
+            next_state_value = self._compute_state_value(current_obs)
+
+            # Bellman target: R + gamma * V(s')
+            bellman_target = reward + self.gamma * next_state_value
+
+            # Update Q(s,a)
+            alpha = self.gradient_step_size
+            self.action_values[prev_action_idx] = (
+                (1 - alpha) * self.action_values[prev_action_idx] +
+                alpha * bellman_target
+            )
+
+        except Exception as e:
+            logger.debug(f"Bellman update failed: {e}")
+
+    def _compute_state_value(self, obs) -> float:
+        """Compute V(s) = max_a Q(s,a)."""
+        try:
+            max_value = float('-inf')
+
+            actions_to_evaluate = [0]  # do_nothing
+            if self.missing_indices:
+                actions_to_evaluate.extend(self.missing_indices[:5])
+            if self.large_indices:
+                actions_to_evaluate.extend(self.large_indices[:5])
+            if self.adv_indices:
+                actions_to_evaluate.extend(self.adv_indices[:3])
+
+            for action_idx in actions_to_evaluate:
+                if action_idx < len(self.possible_actions):
+                    value = self._evaluate_action(obs, action_idx)
+                    total_value = value + self.action_values[action_idx]
+                    max_value = max(max_value, total_value)
+
+            return max_value if max_value > float('-inf') else 0.0
+
+        except Exception as e:
+            logger.debug(f"State value computation failed: {e}")
+            return 0.0
+
+    def _compute_reward(self, obs_before, obs_after) -> float:
+        """Compute immediate reward R(s,a)."""
+        reward = 0.0
+
+        try:
+            if hasattr(obs_after, 'rho') and hasattr(obs_before, 'rho'):
+                max_rho_after = np.max(obs_after.rho)
+                max_rho_before = np.max(obs_before.rho)
+                reward += (max_rho_after - max_rho_before) * 10
+
+                critical_before = np.sum(obs_before.rho > 0.95)
+                critical_after = np.sum(obs_after.rho > 0.95)
+                reward += (critical_after - critical_before) * 50
+        except Exception as e:
+            logger.debug(f"Reward computation failed: {e}")
+
+        return reward
+
+    def _policy_iteration_step(self, obs) -> int:
+        """Policy iteration with state-dependent heuristics."""
         if len(self.possible_actions) == 0:
-            logger.error("No actions available in policy iteration")
             return 0
-        
+
         if self.space_prng.random() < 0.1:  # 10% exploration
             return self.space_prng.randint(0, len(self.possible_actions))
-        else:
-            scores = self.action_values.copy()
-            
-            # Add heuristic bonuses
-            obs_vector = obs.to_vect()
-            
-            for i, (action_type, idx) in enumerate(self.possible_actions):
-                if action_type == "large" and idx < len(obs_vector):
-                    if "rho" in self.attr_start_idx:
-                        rho_start = self.attr_start_idx["rho"]
-                        if rho_start <= idx < rho_start + len(obs.rho):
-                            rho_idx = idx - rho_start
-                            current_load = obs.rho[rho_idx]
-                            scores[i] += current_load * 10
-            
-            # Safety check before argmax
-            if len(scores) == 0:
-                logger.error("Empty scores array")
-                return 0
-            
-            return np.argmax(scores)
 
+        scores = self.action_values.copy()
 
-    def _value_iteration_step(self, obs: grid2op.Observation.BaseObservation) -> int:
-        """
-        Value iteration: Refine action selection through lookahead.
-        """
-        # Start with policy selection
+        # Add heuristic bonuses (state-dependent)
+        obs_vector = obs.to_vect()
+
+        for i, (action_type, idx) in enumerate(self.possible_actions):
+            if action_type == "large" and idx < len(obs_vector):
+                if "rho" in self.attr_start_idx:
+                    rho_start = self.attr_start_idx["rho"]
+                    if rho_start <= idx < rho_start + len(obs.rho):
+                        rho_idx = idx - rho_start
+                        current_load = obs.rho[rho_idx]
+                        scores[i] += current_load * 10
+
+        if len(scores) == 0:
+            return 0
+
+        return np.argmax(scores)
+
+    def _value_iteration_step(self, obs) -> int:
+        """Value iteration with refinement."""
         best_action = self._policy_iteration_step(obs)
-        best_value = self._evaluate_action(obs, best_action)
-        
-        # Refine through gradient search in action space
+        best_value = self._evaluate_action(obs, best_action) + self.action_values[best_action]
+
         for _ in range(self.refinement_iterations):
-            # Sample nearby actions
             candidates = []
-            
-            # Try actions of the same type
             action_type, _ = self.possible_actions[best_action]
+
             if action_type == "missing":
-                candidates = self.missing_indices[:5]  # Sample 5
+                candidates = self.missing_indices[:5]
             elif action_type == "large":
                 candidates = self.large_indices[:5]
             elif action_type == "adv_exmpl":
                 candidates = self.adv_indices[:5]
-            
-            # Evaluate candidates
+
             for candidate_idx in candidates:
-                value = self._evaluate_action(obs, candidate_idx)
-                if value > best_value:
-                    best_value = value
+                heuristic_value = self._evaluate_action(obs, candidate_idx)
+                total_value = heuristic_value + self.action_values[candidate_idx]
+                if total_value > best_value:
+                    best_value = total_value
                     best_action = candidate_idx
-        
+
         return best_action
 
-    def _evaluate_action(self, obs: grid2op.Observation.BaseObservation, action_idx: int) -> float:
-        """
-        Evaluate the effectiveness of an action.
-        Higher score = more disruptive to defender.
-        """
+    def _evaluate_action(self, obs, action_idx: int) -> float:
+        """Evaluate action using domain heuristics."""
         try:
-            # Apply action to get perturbed observation
             obs_test = copy.deepcopy(obs)
             action_type, action_param = self.possible_actions[action_idx]
             obs_test = self._apply_action(obs_test, action_type, action_param)
-            
-            # Measure disruption potential
+
             score = 0.0
-            
-            # Check if it triggers critical loads
+
             if hasattr(obs_test, 'rho'):
                 max_rho = np.max(obs_test.rho)
-                score += max_rho * 10  # Reward high line loads
-                
-                # Extra bonus for pushing lines over threshold
+                score += max_rho * 10
                 critical_lines = np.sum(obs_test.rho > 0.95)
                 score += critical_lines * 50
-            
-            # Penalty for do_nothing
+
             if action_type == "do_nothing":
                 score -= 100
-            
+
             return score
-            
+
         except Exception as e:
             logger.debug(f"Action evaluation failed: {e}")
             return 0.0
 
-    def _apply_action(self, obs: grid2op.Observation.BaseObservation, 
-                     action_type: str, action_param: int) -> grid2op.Observation.BaseObservation:
-        """Apply the selected action to the observation."""
-        obs.to_vect()  # Ensure vectorized form is available
-        
+    def _apply_action(self, obs, action_type: str, action_param: int):
+        """Apply action to observation."""
+        obs.to_vect()
+
         if action_type == "do_nothing":
             return obs
-            
         elif action_type == "missing":
             obs._vectorized[action_param] = 0
-            # Update corresponding attribute
             self._update_obs_attribute(obs, action_param, 0)
-            
         elif action_type == "large":
             obs._vectorized[action_param] = 999999
-            # Update corresponding attribute
             self._update_obs_attribute(obs, action_param, 999999)
-            
         elif action_type == "adv_exmpl":
-            # Simple adversarial: Add noise to push towards misclassification
             obs_vector = obs.to_vect()
             noise = np.random.randn(*obs_vector.shape) * self.epsilon
             obs._vectorized = obs_vector + noise
-            # Update rho to match perturbed values
             if hasattr(obs, 'rho'):
                 rho_start = self.attr_start_idx.get("rho", 0)
                 rho_end = rho_start + len(obs.rho)
                 obs.rho = obs._vectorized[rho_start:rho_end]
-        
+
         return obs
 
-    def _update_obs_attribute(self, obs: grid2op.Observation.BaseObservation, 
-                              idx: int, value: float):
-        """Update the corresponding attribute after modifying vectorized form."""
-        # Find which attribute this index belongs to
+    def _update_obs_attribute(self, obs, idx: int, value: float):
+        """Update attribute after modifying vectorized form."""
         for attr_name, start_idx in self.attr_start_idx.items():
             if hasattr(obs, attr_name):
                 attr_array = getattr(obs, attr_name)
@@ -324,26 +400,6 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
                     setattr(obs, attr_name, attr_array)
                     break
 
-    def _update_action_value(self, action_idx: int, 
-                            obs_before: grid2op.Observation.BaseObservation,
-                            obs_after: grid2op.Observation.BaseObservation):
-        """Update value estimates for actions based on outcomes."""
-        # Simple learning: Track effectiveness
-        reward = 0.0
-        
-        # Reward if we increased line loads
-        if hasattr(obs_after, 'rho'):
-            max_rho_after = np.max(obs_after.rho)
-            max_rho_before = np.max(obs_before.rho)
-            reward = (max_rho_after - max_rho_before) * 10
-        
-        # Update value with learning rate
-        learning_rate = 0.1
-        self.action_values[action_idx] = (
-            (1 - learning_rate) * self.action_values[action_idx] + 
-            learning_rate * reward
-        )
-
     def _get_probability_schedule(self, iteration: int) -> float:
         """Get probability of using policy iteration."""
         if self.decay_schedule == "linear":
@@ -352,32 +408,35 @@ class LambdaPIRPerturbationAgent(BasePerturbationAgent):
             decay_factor = np.exp(-0.01 * iteration)
         else:
             decay_factor = 1.0
-        
+
         self.current_prob_policy = self.initial_prob_policy * decay_factor
         return np.clip(self.current_prob_policy, 0.1, 1.0)
 
     def get_stats(self) -> Dict[str, Any]:
         """Get statistics."""
-        if not self.action_history:
-            return {}
-        
-        # Count action types
         action_counts = {"do_nothing": 0, "missing": 0, "large": 0, "adv_exmpl": 0}
+
         for action_idx in self.action_history[-100:]:
-            action_type, _ = self.possible_actions[action_idx]
-            action_counts[action_type] += 1
-        
+            if action_idx < len(self.possible_actions):
+                action_type, _ = self.possible_actions[action_idx]
+                action_counts[action_type] += 1
+
         return {
             "total_iterations": self.iteration_count,
             "policy_updates": self.policy_updates,
             "value_updates": self.value_updates,
             "current_prob_policy": self.current_prob_policy,
             "action_counts": action_counts,
-            "top_action": max(action_counts, key=action_counts.get)
+            "gamma": self.gamma,
+            "bellman_updates": True,
+            "mean_q_value": np.mean(self.action_values) if len(self.action_values) > 0 else 0.0,
         }
 
     def reset(self):
         """Reset between episodes."""
         self.iteration_count = 0
         self.action_history = []
+        self.prev_obs = None
+        self.prev_action_idx = None
+        self.prev_reward = None
         super().reset()

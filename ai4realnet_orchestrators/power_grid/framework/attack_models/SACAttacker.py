@@ -31,6 +31,11 @@ class SACAttacker(BaseAttackerClass):
         self.pickle_file = pickle_file
         self.model = SAC.load(self.model_path)
         self.entropy_threshold = entropy_threshold
+        super().__init__(name=self.model_name)
+
+    def load(self, path):
+        self.model_path = str(path)
+        self.model = SAC.load(self.model_path)
 
 
     def perturb(self, obs):

@@ -2,8 +2,13 @@ import pandas as pd
 import numpy as np
 import copy
 from utility.UtilityHelper import UtilityHelper
+from attack_models.BaseAgent import BaseAgent
 
-class BaseAttackerClass:
+
+class BaseAttackerClass(BaseAgent):
+    def __init__(self, name=""):
+        super().__init__(name)
+
     def _attribute_setup(self, obs):
         """
         Build attribute mapping from observation.

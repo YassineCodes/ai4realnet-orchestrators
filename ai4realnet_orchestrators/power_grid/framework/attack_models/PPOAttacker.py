@@ -17,6 +17,11 @@ class PPOAttacker(BaseAttackerClass):
         self.model_name = model_name
         self.pickle_file = pickle_file
         self.model = PPO.load(self.model_path, device="cpu")
+        super().__init__(name=self.model_name)
+
+    def load(self, path):
+        self.model_path = str(path)
+        self.model = PPO.load(self.model_path, device="cpu")
 
 
     def perturb(self, obs):
